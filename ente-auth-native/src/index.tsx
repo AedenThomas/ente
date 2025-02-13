@@ -59,6 +59,19 @@ function MainView({ onLogout }: MainViewProps): JSX.Element {
       console.log("Fetching authentication codes...");
       const token = await sessionManager.getToken();
       console.log("Got token:", token ? "Token exists" : "No token found");
+      if (token) {
+        console.log("Token length:", token.length);
+        console.log("Token first/last 10 chars:", token.slice(0, 10) + "..." + token.slice(-10));
+        // Check for any non-printable or special characters
+        const hasSpecialChars = /[^\x20-\x7E]/.test(token);
+        console.log("Token has special characters:", hasSpecialChars);
+        if (hasSpecialChars) {
+          console.log(
+            "Special characters found at positions:",
+            [...token].map((char, i) => (/[^\x20-\x7E]/.test(char) ? i : -1)).filter((i) => i !== -1)
+          );
+        }
+      }
 
       if (!token) {
         throw new Error("No authentication token found");
@@ -66,12 +79,15 @@ function MainView({ onLogout }: MainViewProps): JSX.Element {
 
       // First, get the authenticator key
       console.log("Fetching authenticator key...");
+      const headers = {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      };
+      console.log("Request headers:", headers);
+
       const keyResponse = await fetch("https://api.ente.io/authenticator/key", {
         method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
+        headers,
       });
 
       console.log("Key response status:", keyResponse.status);
@@ -94,10 +110,7 @@ function MainView({ onLogout }: MainViewProps): JSX.Element {
       console.log("Fetching authenticator entities...");
       const codesResponse = await fetch("https://api.ente.io/authenticator/diff", {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
+        headers,
         body: JSON.stringify({
           sinceTime: 0,
           limit: 500,
@@ -129,10 +142,10 @@ function MainView({ onLogout }: MainViewProps): JSX.Element {
                   type: url.protocol.startsWith("otpauth://totp")
                     ? "totp"
                     : url.protocol.startsWith("otpauth://hotp")
-                      ? "hotp"
-                      : url.hostname === "steam"
-                        ? "steam"
-                        : "totp",
+                    ? "hotp"
+                    : url.hostname === "steam"
+                    ? "steam"
+                    : "totp",
                   account: url.pathname.split(":")[1] || "",
                   issuer,
                   length: parseInt(url.searchParams.get("digits") || "6"),
@@ -150,7 +163,7 @@ function MainView({ onLogout }: MainViewProps): JSX.Element {
                 console.error("Failed to parse code URI:", error);
                 return null;
               }
-            }),
+            })
         );
 
         const validCodes = activeCodes.filter((code): code is Code => code !== null);
@@ -246,10 +259,11 @@ export default function Command(): JSX.Element {
   const [isLoading, setIsLoading] = useState(false);
   const { push } = useNavigation();
 
-  const srpAuth = new SRPAuth();
-  const passkeyAuth = new PasskeyAuth();
-  const sessionManager = new SessionManager();
+  // Create shared instances
   const tokenManager = new TokenManager();
+  const sessionManager = new SessionManager();
+  const srpAuth = new SRPAuth(tokenManager);
+  const passkeyAuth = new PasskeyAuth();
 
   async function handleSubmit() {
     if (!email || (!showOTPField && !password) || (showOTPField && !otp)) {
@@ -292,28 +306,23 @@ export default function Command(): JSX.Element {
           return;
         }
 
-        session = otpResponse;
+        // Token is already saved by verifyEmailOTP
+        await tokenManager.saveUserId(otpResponse.id.toString());
       } else {
         try {
           // Try normal SRP authentication
           session = await srpAuth.login(email, password);
+          await tokenManager.saveToken(session.keyAttributes, session.encryptedToken);
+          await tokenManager.saveUserId(session.id.toString());
         } catch (error) {
-          if (error instanceof Error && error.message === "EMAIL_MFA_REQUIRED") {
+          if (error.message === "EMAIL_MFA_REQUIRED") {
             setShowOTPField(true);
-            await showToast({
-              style: Toast.Style.Success,
-              title: "OTP Sent",
-              message: "Please check your email for the verification code",
-            });
             setIsLoading(false);
             return;
           }
           throw error;
         }
       }
-
-      await tokenManager.saveToken(session);
-      await tokenManager.saveUserId(session.id.toString());
 
       await showToast({
         style: Toast.Style.Success,
@@ -327,12 +336,10 @@ export default function Command(): JSX.Element {
       await showToast({
         style: Toast.Style.Failure,
         title: "Authentication Failed",
-        message: error instanceof Error ? error.message : "An error occurred during authentication",
+        message: error.message || "Please try again",
       });
     } finally {
-      if (!showOTPField) {
-        setIsLoading(false);
-      }
+      setIsLoading(false);
     }
   }
 

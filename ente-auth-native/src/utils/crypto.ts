@@ -1,12 +1,15 @@
 import { argon2id } from "hash-wasm";
 import { Buffer } from "buffer";
 import crypto from "crypto";
+import { KeyAttributes } from "../types/auth";
+import { sodium } from "./sodium";
+import { base64ToBytes, bytesToBase64 } from "./base64";
 
 export async function deriveArgonKey(
   password: string,
   salt: string,
   memLimit: number,
-  opsLimit: number,
+  opsLimit: number
 ): Promise<Uint8Array> {
   try {
     // Convert memLimit from bytes to KB as required by hash-wasm
@@ -41,40 +44,98 @@ export async function deriveArgonKey(
 
 export async function deriveLoginKey(keyEncKey: Uint8Array): Promise<Uint8Array> {
   try {
-    console.log("Starting login key derivation, keyEncKey length:", keyEncKey.length);
-
-    const data = Buffer.from("login");
-    console.log("Login data encoded");
-
-    const hmac = crypto.createHmac("sha256", Buffer.from(keyEncKey));
-    const signature = hmac.update(data).digest();
-    console.log("HMAC signature generated, length:", signature.length);
-
-    return new Uint8Array(signature);
+    console.log("Starting login key derivation");
+    await sodium.init();
+    return sodium.crypto_kdf_derive_from_key(
+      32, // Length of the derived key (changed from 16 to 32)
+      1, // Subkey ID
+      "loginctx", // Context
+      keyEncKey // Master key
+    );
   } catch (error) {
     console.error("Login key derivation failed:", error);
     throw error;
   }
 }
 
-export async function decryptToken(encryptedToken: string, keyEncKey: Uint8Array, nonce: string): Promise<string> {
+export async function decryptToken(keyAttributes: KeyAttributes, keyEncKey: Uint8Array): Promise<string> {
   try {
-    console.log("Starting token decryption");
-    const nonceBuffer = Buffer.from(nonce, "base64");
-    const encryptedBuffer = Buffer.from(encryptedToken, "base64");
-    console.log("Buffers created:", {
-      nonceLength: nonceBuffer.length,
-      encryptedLength: encryptedBuffer.length,
+    console.log("Starting token decryption process");
+    console.log("Key attributes:", {
+      encryptedKey: keyAttributes.encryptedKey,
+      keyDecryptionNonce: keyAttributes.keyDecryptionNonce,
+      encryptedSecretKey: keyAttributes.encryptedSecretKey,
+      secretKeyDecryptionNonce: keyAttributes.secretKeyDecryptionNonce,
+      publicKey: keyAttributes.publicKey,
+      encryptedToken: keyAttributes.encryptedToken,
     });
+    console.log("Key encryption key length:", keyEncKey.length);
 
-    const decipher = crypto.createDecipheriv("aes-256-gcm", Buffer.from(keyEncKey), nonceBuffer);
+    // First decrypt the master key using key encryption key (KEK)
+    const masterKey = await decryptMasterKey(keyAttributes, keyEncKey);
+    console.log("Master key decrypted successfully, length:", masterKey.length);
 
-    const decrypted = Buffer.concat([decipher.update(encryptedBuffer), decipher.final()]);
-    console.log("Token decrypted successfully");
+    // Then decrypt the secret key using master key
+    const secretKey = await decryptSecretKey(keyAttributes, masterKey);
+    console.log("Secret key decrypted successfully, length:", secretKey.length);
 
-    return decrypted.toString("utf8");
+    // Finally decrypt the token using secret key and public key
+    const token = await decryptTokenWithSecretKey(keyAttributes.encryptedToken, keyAttributes.publicKey, secretKey);
+    console.log("Token decrypted successfully, length:", token.length);
+
+    return token;
   } catch (error) {
     console.error("Token decryption failed:", error);
+    throw error;
+  }
+}
+
+async function decryptMasterKey(keyAttributes: KeyAttributes, keyEncKey: Uint8Array): Promise<Uint8Array> {
+  try {
+    const encryptedKey = base64ToBytes(keyAttributes.encryptedKey);
+    const nonce = base64ToBytes(keyAttributes.keyDecryptionNonce);
+    console.log("Decrypting master key:", {
+      encryptedKeyLength: encryptedKey.length,
+      nonceLength: nonce.length,
+      keyEncKeyLength: keyEncKey.length,
+    });
+
+    return sodium.crypto_secretbox_open_easy(encryptedKey, nonce, keyEncKey);
+  } catch (error) {
+    console.error("Failed to decrypt master key:", error);
+    throw error;
+  }
+}
+
+async function decryptSecretKey(keyAttributes: KeyAttributes, masterKey: Uint8Array): Promise<Uint8Array> {
+  try {
+    const encryptedSecretKey = base64ToBytes(keyAttributes.encryptedSecretKey);
+    const nonce = base64ToBytes(keyAttributes.secretKeyDecryptionNonce);
+    console.log("Decrypting secret key:", {
+      encryptedSecretKeyLength: encryptedSecretKey.length,
+      nonceLength: nonce.length,
+      masterKeyLength: masterKey.length,
+    });
+
+    return sodium.crypto_secretbox_open_easy(encryptedSecretKey, nonce, masterKey);
+  } catch (error) {
+    console.error("Failed to decrypt secret key:", error);
+    throw error;
+  }
+}
+
+async function decryptTokenWithSecretKey(
+  encryptedToken: string,
+  publicKey: string,
+  secretKey: Uint8Array
+): Promise<string> {
+  try {
+    const encryptedTokenBytes = base64ToBytes(encryptedToken);
+    const publicKeyBytes = base64ToBytes(publicKey);
+    const decryptedToken = await sodium.crypto_box_seal_open(encryptedTokenBytes, publicKeyBytes, secretKey);
+    return Buffer.from(decryptedToken).toString("utf8");
+  } catch (error) {
+    console.error("Failed to decrypt token:", error);
     throw error;
   }
 }
