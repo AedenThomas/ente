@@ -58,7 +58,7 @@ export async function deriveLoginKey(keyEncKey: Uint8Array): Promise<Uint8Array>
   }
 }
 
-export async function decryptToken(keyAttributes: KeyAttributes, keyEncKey: Uint8Array): Promise<string> {
+export async function decryptToken(keyAttributes: KeyAttributes, keyEncKey: Uint8Array): Promise<Uint8Array> {
   try {
     console.log("Starting token decryption process");
     console.log("Key attributes:", {
@@ -80,10 +80,14 @@ export async function decryptToken(keyAttributes: KeyAttributes, keyEncKey: Uint
     console.log("Secret key decrypted successfully, length:", secretKey.length);
 
     // Finally decrypt the token using secret key and public key
-    const token = await decryptTokenWithSecretKey(keyAttributes.encryptedToken, keyAttributes.publicKey, secretKey);
-    console.log("Token decrypted successfully, length:", token.length);
+    const tokenBytes = await decryptTokenWithSecretKey(
+      keyAttributes.encryptedToken,
+      keyAttributes.publicKey,
+      secretKey
+    );
+    console.log("Token decrypted successfully, length:", tokenBytes.length);
 
-    return token;
+    return tokenBytes;
   } catch (error) {
     console.error("Token decryption failed:", error);
     throw error;
@@ -128,12 +132,11 @@ async function decryptTokenWithSecretKey(
   encryptedToken: string,
   publicKey: string,
   secretKey: Uint8Array
-): Promise<string> {
+): Promise<Uint8Array> {
   try {
     const encryptedTokenBytes = base64ToBytes(encryptedToken);
     const publicKeyBytes = base64ToBytes(publicKey);
-    const decryptedToken = await sodium.crypto_box_seal_open(encryptedTokenBytes, publicKeyBytes, secretKey);
-    return Buffer.from(decryptedToken).toString("utf8");
+    return await sodium.crypto_box_seal_open(encryptedTokenBytes, publicKeyBytes, secretKey);
   } catch (error) {
     console.error("Failed to decrypt token:", error);
     throw error;

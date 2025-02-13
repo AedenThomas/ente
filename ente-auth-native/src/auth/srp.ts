@@ -1,6 +1,6 @@
 import { deriveArgonKey, deriveLoginKey } from "../utils/crypto";
 import { api } from "../services/api";
-import { SRPAttributes, SRPSession, EmailOTPResponse } from "../types/auth";
+import { SRPAttributes, SRPSession, EmailOTPResponse, Token } from "../types/auth";
 import { TokenManager } from "./token";
 import { Buffer } from "buffer";
 import { SRP, SrpClient } from "fast-srp-hap";
@@ -217,6 +217,12 @@ export class SRPAuth {
       // Verify OTP
       const response = await api.verifyEmailOTP(email, otp);
       console.log("[SRPAuth.verifyEmailOTP] OTP verified successfully");
+      console.log("[SRPAuth.verifyEmailOTP] Response:", {
+        id: response.id,
+        hasKeyAttributes: !!response.keyAttributes,
+        hasEncryptedToken: !!response.encryptedToken,
+      });
+
       await showToast({
         style: Toast.Style.Success,
         title: "OTP Verified",
@@ -233,8 +239,16 @@ export class SRPAuth {
       );
       await this.tokenManager.saveMasterKey(keyEncKey);
 
-      // Save and decrypt the token
-      await this.tokenManager.saveToken(response.keyAttributes, response.encryptedToken);
+      // Create token object with all required fields
+      const tokenObject: Token = {
+        id: response.id,
+        token: response.token,
+        encryptedToken: response.encryptedToken,
+        keyAttributes: response.keyAttributes,
+      };
+
+      // Save the token
+      await this.tokenManager.saveToken(tokenObject);
 
       // Clear stored state after successful login
       await this.clearState();
@@ -247,15 +261,14 @@ export class SRPAuth {
       let errorMessage = "Please try again";
       if (error.response?.status === 401) {
         errorMessage = "Incorrect verification code";
-      } else {
-        errorMessage = error.message || errorMessage;
       }
 
       await showToast({
         style: Toast.Style.Failure,
-        title: "Invalid OTP",
+        title: "Verification Failed",
         message: errorMessage,
       });
+
       throw error;
     }
   }

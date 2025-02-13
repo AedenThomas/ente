@@ -80,7 +80,7 @@ function MainView({ onLogout }: MainViewProps): JSX.Element {
       // First, get the authenticator key
       console.log("Fetching authenticator key...");
       const headers = {
-        Authorization: `Bearer ${token}`,
+        "X-Auth-Token": token,
         "Content-Type": "application/json",
       };
       console.log("Request headers:", headers);
@@ -104,7 +104,9 @@ function MainView({ onLogout }: MainViewProps): JSX.Element {
       }
 
       const keyData = JSON.parse(keyResponseText) as AuthenticatorKey;
+      console.log("Decrypting authenticator key...");
       const authenticatorKey = await decryptAuthenticatorData(keyData.encryptedKey);
+      console.log("Authenticator key decrypted successfully");
 
       // Then, get the authenticator entities
       console.log("Fetching authenticator entities...");
@@ -132,9 +134,9 @@ function MainView({ onLogout }: MainViewProps): JSX.Element {
         const activeCodes = await Promise.all(
           data
             .filter((entity: { isDeleted: boolean }) => !entity.isDeleted)
-            .map(async (entity: { id: string; data: string }) => {
+            .map(async (entity: { id: string; data: string; header: string }) => {
               try {
-                const decryptedData = await decryptAuthenticatorData(entity.data, authenticatorKey);
+                const decryptedData = await decryptAuthenticatorData(entity.data);
                 const url = new URL(decryptedData);
                 const issuer = url.searchParams.get("issuer") || url.pathname.split(":")[0].substring(1) || "";
                 return {
