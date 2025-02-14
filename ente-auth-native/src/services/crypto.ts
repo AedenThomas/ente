@@ -1,5 +1,5 @@
-import { base64ToBytes } from "./utils";
 import { TokenManager } from "../auth/token";
+import { decryptBox } from "../utils/crypto";
 
 export interface AuthenticatorKey {
   encryptedKey: string;
@@ -8,25 +8,27 @@ export interface AuthenticatorKey {
 }
 
 export async function decryptAuthenticatorData(encryptedData: string): Promise<string> {
-  try {
-    const tokenManager = new TokenManager();
-    const masterKey = await tokenManager.getMasterKey();
-    if (!masterKey) {
-      throw new Error("No master key found for decryption");
-    }
+  console.debug("[decryptAuthenticatorData] Received encryptedData (truncated):", encryptedData.substring(0, 20) + "...");
+  const tokenManager = new TokenManager();
+  const masterKey = await tokenManager.getMasterKey();
+  if (!masterKey) {
+    throw new Error("Master key not found");
+  }
+  console.debug("[decryptAuthenticatorData] Master key (bytes):", {
+    length: masterKey.length,
+    snippet: Array.from(masterKey.slice(0, 5)),
+  });
 
-    const encryptedBytes = base64ToBytes(encryptedData);
-    const decrypted = await crypto.subtle.decrypt(
-      {
-        name: "AES-GCM",
-        iv: encryptedBytes.slice(0, 12), // First 12 bytes are the IV
-      },
-      await crypto.subtle.importKey("raw", masterKey, "AES-GCM", false, ["decrypt"]),
-      encryptedBytes.slice(12) // Rest is the encrypted data
-    );
-    return new TextDecoder().decode(decrypted);
+  try {
+    const encryptedBytes = Buffer.from(encryptedData, "base64");
+    console.debug("[decryptAuthenticatorData] Encrypted data converted to bytes, length:", encryptedBytes.length);
+
+    const decryptedBytes = await decryptBox(encryptedBytes, masterKey);
+    const decryptedText = Buffer.from(decryptedBytes).toString("utf-8");
+    console.debug("[decryptAuthenticatorData] Decrypted text (first 50 chars):", decryptedText.substring(0, 50));
+    return decryptedText;
   } catch (error) {
-    console.error("Failed to decrypt authenticator data:", error);
+    console.error("[decryptAuthenticatorData] Failed to decrypt data:", error);
     throw new Error("Failed to decrypt authenticator data");
   }
 }

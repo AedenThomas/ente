@@ -14,14 +14,22 @@ export interface Code {
 }
 
 export function generateOTPs(code: Code): [string, string] {
+  console.debug("[generateOTPs] Generating OTP for code:", {
+    id: code.id,
+    type: code.type,
+    secretSnippet: code.secret.substring(0, 8) + "...",
+  });
   let currentOTP: string;
   let nextOTP: string;
+
+  // Ensure secret is properly formatted (remove spaces and convert to uppercase)
+  const secret = code.secret.replace(/\s/g, "").toUpperCase();
 
   switch (code.type) {
     case "totp": {
       const totp = new TOTP({
-        secret: code.secret,
-        algorithm: code.algorithm,
+        secret,
+        algorithm: code.algorithm.toUpperCase(),
         period: code.period,
         digits: code.length,
       });
@@ -35,9 +43,9 @@ export function generateOTPs(code: Code): [string, string] {
     case "hotp": {
       const counter = code.counter ?? 0;
       const hotp = new HOTP({
-        secret: code.secret,
-        counter: counter,
-        algorithm: code.algorithm,
+        secret,
+        algorithm: code.algorithm.toUpperCase(),
+        digits: code.length,
       });
       currentOTP = hotp.generate({ counter });
       nextOTP = hotp.generate({ counter: counter + 1 });
@@ -45,10 +53,11 @@ export function generateOTPs(code: Code): [string, string] {
     }
 
     case "steam": {
-      const steam = new Steam({ secret: code.secret });
-      currentOTP = steam.generate();
+      const steam = new Steam({ secret });
+      const now = Math.floor(Date.now() / 1000);
+      currentOTP = steam.generate({ timestamp: now });
       nextOTP = steam.generate({
-        timestamp: Date.now() + code.period * 1000,
+        timestamp: now + code.period,
       });
       break;
     }
@@ -57,5 +66,6 @@ export function generateOTPs(code: Code): [string, string] {
       throw new Error(`Unsupported OTP type: ${code.type}`);
   }
 
+  console.debug("[generateOTPs] OTPs generated:", { currentOTP, nextOTP });
   return [currentOTP, nextOTP];
 }

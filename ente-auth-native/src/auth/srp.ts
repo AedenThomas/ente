@@ -1,10 +1,11 @@
-import { deriveArgonKey, deriveLoginKey } from "../utils/crypto";
+import { deriveArgonKey, deriveLoginKey, padBuffer } from "../utils/crypto";
 import { api } from "../services/api";
 import { SRPAttributes, SRPSession, EmailOTPResponse, Token } from "../types/auth";
 import { TokenManager } from "./token";
 import { Buffer } from "buffer";
 import { SRP, SrpClient } from "fast-srp-hap";
 import { showToast, Toast, LocalStorage } from "@raycast/api";
+import { debugLog } from "../utils/logger";
 
 const SRP_PARAMS = SRP.params["4096"];
 
@@ -14,12 +15,74 @@ const STORAGE_KEYS = {
   PASSWORD: "stored_password",
 };
 
+// Add helper functions
+function convertBufferToBase64(buffer: Buffer): string {
+  return buffer.toString("base64");
+}
+
+function convertBase64ToBuffer(base64: string): Buffer {
+  return Buffer.from(base64, "base64");
+}
+
+async function generateSRPClient(srpSalt: string, srpUserID: string, loginKey: Buffer): Promise<SrpClient> {
+  return new Promise<SrpClient>((resolve, reject) => {
+    SRP.genKey((err, secret) => {
+      try {
+        if (err) {
+          console.error("[generateSRPClient] Failed to generate secret:", err);
+          reject(err);
+          return;
+        }
+        if (!secret) {
+          console.error("[generateSRPClient] Generated secret is null");
+          reject(new Error("Failed to generate SRP secret"));
+          return;
+        }
+
+        console.log("[generateSRPClient] Generated secret:", {
+          length: secret.length,
+          firstBytes: Array.from(secret.slice(0, 5)),
+          base64: secret.toString("base64"),
+        });
+
+        const client = new SrpClient(
+          SRP_PARAMS,
+          convertBase64ToBuffer(srpSalt),
+          Buffer.from(srpUserID),
+          loginKey,
+          secret,
+          false
+        );
+
+        console.log("[generateSRPClient] Created SRP client with params:", {
+          saltLength: srpSalt.length,
+          userIDLength: srpUserID.length,
+          loginKeyLength: loginKey.length,
+          secretLength: secret.length,
+          saltFirstBytes: Array.from(convertBase64ToBuffer(srpSalt).slice(0, 5)),
+          loginKeyFirstBytes: Array.from(loginKey.slice(0, 5)),
+          secretFirstBytes: Array.from(secret.slice(0, 5)),
+        });
+
+        resolve(client);
+      } catch (error) {
+        console.error("[generateSRPClient] Failed to create SRP client:", {
+          error: error instanceof Error ? error.message : "Unknown error",
+          stack: error instanceof Error ? error.stack : undefined,
+        });
+        reject(error);
+      }
+    });
+  });
+}
+
 export class SRPAuth {
   private tokenManager: TokenManager;
 
   constructor(tokenManager: TokenManager) {
     this.tokenManager = tokenManager;
     console.log("[SRPAuth] Initialized new SRPAuth instance");
+    debugLog("[SRPAuth] Debugging initiated for SRPAuth instance", tokenManager);
   }
 
   private async saveState(email: string, password: string, srpAttributes: SRPAttributes) {
@@ -100,90 +163,165 @@ export class SRPAuth {
             message: "Please try again",
           });
           await this.clearState();
+          throw error;
         }
         throw new Error("EMAIL_MFA_REQUIRED");
       }
 
-      console.log("[SRPAuth.login] No MFA required, proceeding with SRP login");
-      const result = await this.completeSRPLogin(srpAttributes, keyEncKey);
-      await this.clearState();
-      return result;
+      // Complete SRP login
+      return this.completeSRPLogin(srpAttributes, keyEncKey);
     } catch (error) {
-      if (error.message !== "EMAIL_MFA_REQUIRED") {
-        await this.clearState();
-        console.error("[SRPAuth.login] SRP login failed with non-MFA error:", error);
-      }
+      console.error("[SRPAuth.login] Login failed:", error);
       throw error;
     }
   }
 
   private async completeSRPLogin(srpAttributes: SRPAttributes, keyEncKey: Uint8Array): Promise<SRPSession> {
-    console.log("[SRPAuth.completeSRPLogin] Starting SRP login completion");
-
-    // Generate login key
-    console.log("[SRPAuth.completeSRPLogin] Generating login key");
-    const loginKey = await deriveLoginKey(keyEncKey);
-    console.log("[SRPAuth.completeSRPLogin] Login key generated, length:", loginKey.length);
-
-    // Generate SRP client
-    console.log("[SRPAuth.completeSRPLogin] Generating SRP client");
-    const srpClient = await new Promise<SrpClient>((resolve, reject) => {
-      SRP.genKey((err, secret) => {
-        if (err) {
-          console.error("[SRPAuth.completeSRPLogin] Failed to generate SRP secret:", err);
-          reject(err);
-          return;
-        }
-        if (!secret) {
-          console.error("[SRPAuth.completeSRPLogin] SRP secret generation returned null");
-          reject(new Error("Failed to generate SRP secret"));
-          return;
-        }
-        const client = new SrpClient(
-          SRP_PARAMS,
-          Buffer.from(srpAttributes.srpSalt, "base64"),
-          Buffer.from(srpAttributes.srpUserID),
-          Buffer.from(loginKey),
-          secret,
-          false
-        );
-        console.log("[SRPAuth.completeSRPLogin] SRP client created successfully");
-        resolve(client);
+    try {
+      console.log("[SRPAuth.completeSRPLogin] Starting SRP login completion with attributes:", {
+        srpUserID: srpAttributes.srpUserID,
+        srpSaltLength: srpAttributes.srpSalt?.length,
+        memLimit: srpAttributes.memLimit,
+        opsLimit: srpAttributes.opsLimit,
+        keyEncKeyLength: keyEncKey.length,
+        keyEncKeyFirstBytes: Array.from(keyEncKey.slice(0, 5)),
       });
-    });
 
-    // Calculate A
-    const A = srpClient.computeA();
-    console.log("[SRPAuth.completeSRPLogin] Generated A value, length:", A.length);
+      // Generate login key
+      console.log("[SRPAuth.completeSRPLogin] Generating login key");
+      const loginKey = await deriveLoginKey(keyEncKey);
+      console.log("[SRPAuth.completeSRPLogin] Login key generated:", {
+        length: loginKey.length,
+        firstBytes: Array.from(loginKey.slice(0, 5)),
+        isBuffer: loginKey instanceof Buffer,
+        type: Object.prototype.toString.call(loginKey),
+        base64: Buffer.from(loginKey).toString("base64"),
+      });
 
-    // Create SRP session
-    const session = await api.createSRPSession(srpAttributes.srpUserID, A.toString("base64"));
-    console.log("[SRPAuth.completeSRPLogin] SRP session created:", {
-      sessionID: session.sessionID,
-      hasSrpB: !!session.srpB,
-    });
+      // Convert login key to Buffer
+      const loginKeyBuffer = Buffer.from(loginKey);
+      console.log("[SRPAuth.completeSRPLogin] Login key converted to Buffer:", {
+        length: loginKeyBuffer.length,
+        firstBytes: Array.from(loginKeyBuffer.slice(0, 5)),
+        isBuffer: loginKeyBuffer instanceof Buffer,
+        type: Object.prototype.toString.call(loginKeyBuffer),
+        equals: Buffer.compare(loginKey, loginKeyBuffer) === 0,
+        base64: loginKeyBuffer.toString("base64"),
+      });
 
-    // Set B and calculate M1
-    srpClient.setB(Buffer.from(session.srpB, "base64"));
-    const M1 = srpClient.computeM1();
-    console.log("[SRPAuth.completeSRPLogin] Calculated M1, length:", M1.length);
+      // Create SRP client
+      console.log("[SRPAuth.completeSRPLogin] Generating SRP client with params:", {
+        saltLength: srpAttributes.srpSalt?.length,
+        userIdLength: srpAttributes.srpUserID?.length,
+        loginKeyLength: loginKeyBuffer.length,
+        srpSaltFirstBytes: Array.from(convertBase64ToBuffer(srpAttributes.srpSalt).slice(0, 5)),
+        srpUserIDFirstBytes: Array.from(Buffer.from(srpAttributes.srpUserID).slice(0, 5)),
+        srpSaltBase64: srpAttributes.srpSalt,
+      });
 
-    // Verify SRP session
-    const authResponse = await api.verifySRPSession(srpAttributes.srpUserID, session.sessionID, M1.toString("base64"));
-    console.log("[SRPAuth.completeSRPLogin] SRP session verified:", {
-      hasSrpM2: !!authResponse.srpM2,
-      hasKeyAttributes: !!authResponse.keyAttributes,
-      hasEncryptedToken: !!authResponse.encryptedToken,
-    });
+      const srpClient = await generateSRPClient(srpAttributes.srpSalt, srpAttributes.srpUserID, loginKeyBuffer);
 
-    // Verify M2
-    if (authResponse.srpM2) {
-      srpClient.checkM2(Buffer.from(authResponse.srpM2, "base64"));
-      console.log("[SRPAuth.completeSRPLogin] M2 verification successful");
+      // Generate A value
+      const A = srpClient.computeA();
+      console.log("[SRPAuth.completeSRPLogin] Generated A value:", {
+        length: A.length,
+        firstBytes: Array.from(A.slice(0, 5)),
+        base64: convertBufferToBase64(A),
+        isBuffer: A instanceof Buffer,
+        type: Object.prototype.toString.call(A),
+      });
+
+      // Create session
+      const session = await api.createSRPSession(srpAttributes.srpUserID, convertBufferToBase64(A));
+
+      console.log("[SRPAuth.completeSRPLogin] SRP session created:", {
+        sessionID: session.sessionID,
+        hasSrpB: !!session.srpB,
+        srpBLength: session.srpB?.length,
+        srpBFirstBytes: session.srpB ? Array.from(convertBase64ToBuffer(session.srpB).slice(0, 5)) : null,
+      });
+
+      // Set B value
+      const B = convertBase64ToBuffer(session.srpB);
+      console.log("[SRPAuth.completeSRPLogin] Setting B value:", {
+        length: B.length,
+        firstBytes: Array.from(B.slice(0, 5)),
+        base64: session.srpB,
+        isBuffer: B instanceof Buffer,
+        type: Object.prototype.toString.call(B),
+      });
+
+      srpClient.setB(B);
+
+      // Calculate M1
+      const M1 = srpClient.computeM1();
+      console.log("[SRPAuth.completeSRPLogin] Calculated M1:", {
+        length: M1.length,
+        firstBytes: Array.from(M1.slice(0, 5)),
+        base64: convertBufferToBase64(M1),
+        isBuffer: M1 instanceof Buffer,
+        type: Object.prototype.toString.call(M1),
+        rawBuffer: M1.toString("hex"),
+      });
+
+      // Send M1 without additional base64 encoding
+      console.log("[SRPAuth.completeSRPLogin] Verifying SRP session with:", {
+        srpUserID: srpAttributes.srpUserID,
+        sessionID: session.sessionID,
+        m1Length: M1.length,
+        m1Base64: convertBufferToBase64(M1),
+        m1Hex: M1.toString("hex"),
+        requestOrder: {
+          first: "sessionID",
+          second: "srpUserID",
+          third: "srpM1",
+        },
+      });
+
+      const verificationResponse = await api.verifySRPSession(
+        session.sessionID,
+        srpAttributes.srpUserID,
+        convertBufferToBase64(M1)
+      );
+
+      console.log("[SRPAuth.completeSRPLogin] Session verification response:", {
+        hasResponse: !!verificationResponse,
+        id: verificationResponse.id,
+        hasKeyAttributes: !!verificationResponse.keyAttributes,
+        hasEncryptedToken: !!verificationResponse.encryptedToken,
+        hasM2: !!verificationResponse.srpM2,
+        m2Length: verificationResponse.srpM2?.length,
+        m2FirstChars: verificationResponse.srpM2 ? verificationResponse.srpM2.substring(0, 10) : null,
+      });
+
+      // Verify M2
+      if (verificationResponse.srpM2) {
+        const M2 = convertBase64ToBuffer(verificationResponse.srpM2);
+        console.log("[SRPAuth.completeSRPLogin] Verifying M2:", {
+          m2Length: M2.length,
+          m2FirstBytes: Array.from(M2.slice(0, 5)),
+          m2Base64: verificationResponse.srpM2,
+          m2Hex: M2.toString("hex"),
+        });
+
+        srpClient.checkM2(M2);
+        console.log("[SRPAuth.completeSRPLogin] M2 verification successful");
+      } else {
+        console.warn("[SRPAuth.completeSRPLogin] No M2 value in response");
+      }
+
+      return {
+        id: verificationResponse.id,
+        keyAttributes: verificationResponse.keyAttributes,
+        encryptedToken: verificationResponse.encryptedToken,
+      };
+    } catch (error) {
+      console.error("[SRPAuth.completeSRPLogin] SRP login failed:", {
+        error: error instanceof Error ? error.message : "Unknown error",
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      throw error;
     }
-
-    console.log("[SRPAuth.completeSRPLogin] SRP login completed successfully");
-    return authResponse;
   }
 
   async getSRPAttributes(email: string): Promise<SRPAttributes> {
@@ -203,14 +341,19 @@ export class SRPAuth {
 
     try {
       // Get stored state
-      const { email: storedEmail, password, srpAttributes } = await this.getStoredState();
+      const state = await this.getStoredState();
+      console.log("[SRPAuth.verifyEmailOTP] Retrieved state:", {
+        hasEmail: !!state.email,
+        hasPassword: !!state.password,
+        hasSrpAttributes: !!state.srpAttributes,
+      });
 
-      if (!storedEmail || !password || !srpAttributes) {
+      if (!state.email || !state.password || !state.srpAttributes) {
         throw new Error("Authentication state not found. Please try logging in again.");
       }
 
       // Verify email matches
-      if (email !== storedEmail) {
+      if (email !== state.email) {
         throw new Error("Email mismatch. Please try logging in again.");
       }
 
@@ -229,46 +372,25 @@ export class SRPAuth {
         message: "Login successful",
       });
 
-      // Derive key encryption key again
+      // Re-derive key encryption key
       console.log("[SRPAuth.verifyEmailOTP] Re-deriving key encryption key");
       const keyEncKey = await deriveArgonKey(
-        password,
-        srpAttributes.kekSalt,
-        srpAttributes.memLimit,
-        srpAttributes.opsLimit
+        state.password,
+        state.srpAttributes.kekSalt,
+        state.srpAttributes.memLimit,
+        state.srpAttributes.opsLimit
       );
       await this.tokenManager.saveMasterKey(keyEncKey);
 
-      // Create token object with all required fields
-      const tokenObject: Token = {
-        id: response.id,
-        token: response.token,
-        encryptedToken: response.encryptedToken,
-        keyAttributes: response.keyAttributes,
-      };
-
       // Save the token
-      await this.tokenManager.saveToken(tokenObject);
+      await this.tokenManager.saveToken(response);
 
-      // Clear stored state after successful login
+      // Clear stored state
       await this.clearState();
 
       return response;
     } catch (error) {
       console.error("[SRPAuth.verifyEmailOTP] OTP verification failed:", error);
-      await this.clearState();
-
-      let errorMessage = "Please try again";
-      if (error.response?.status === 401) {
-        errorMessage = "Incorrect verification code";
-      }
-
-      await showToast({
-        style: Toast.Style.Failure,
-        title: "Verification Failed",
-        message: errorMessage,
-      });
-
       throw error;
     }
   }

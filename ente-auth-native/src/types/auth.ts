@@ -17,6 +17,10 @@ export interface KeyAttributes {
   secretKeyDecryptionNonce: string;
   memLimit: number;
   opsLimit: number;
+  masterKeyEncryptedWithRecoveryKey?: string;
+  masterKeyDecryptionNonce?: string;
+  recoveryKeyEncryptedWithMasterKey?: string;
+  recoveryKeyDecryptionNonce?: string;
 }
 
 export interface SRPSession extends Token {
@@ -24,18 +28,25 @@ export interface SRPSession extends Token {
 }
 
 export interface Token {
-  token: string;
-  encryptedToken: string;
-  keyAttributes?: KeyAttributes;
   id: string;
+  keyAttributes?: KeyAttributes;
+  encryptedToken: string;
+  token?: string;
+  twoFactorSessionID?: string;
+  passkeySessionID?: string;
+  srpM2?: string;
 }
 
 export interface TokenInfo {
-  creationTime: number;
-  lastUsedTime: number;
-  userAgent: string;
-  isDeleted: boolean;
-  app: string;
+  id: string;
+  createdAt: string;
+  lastUsedAt: string;
+  deviceInfo: {
+    name: string;
+    os: string;
+    browser: string;
+  };
+  current: boolean;
 }
 
 export interface PasskeySession {
@@ -69,7 +80,32 @@ export interface AuthError {
 }
 
 export interface EmailOTPResponse extends Token {
+  id: string;
+  keyAttributes: KeyAttributes;
+  encryptedToken: string;
+}
+
+export interface TokenRefreshResponse {
+  id: number;
+  keyAttributes: {
+    kekSalt: string;
+    kekHash: string;
+    encryptedKey: string;
+    keyDecryptionNonce: string;
+    publicKey: string;
+    encryptedSecretKey: string;
+    secretKeyDecryptionNonce: string;
+    memLimit: number;
+    opsLimit: number;
+    masterKeyEncryptedWithRecoveryKey?: string;
+    masterKeyDecryptionNonce?: string;
+    recoveryKeyEncryptedWithMasterKey?: string;
+    recoveryKeyDecryptionNonce?: string;
+  };
+  encryptedToken: string;
+  hasSetKeys?: boolean;
+  twoFactorSessionID?: string;
+  twoFactorSessionIDV2?: string;
   passkeySessionID?: string;
   accountsUrl?: string;
-  twoFactorSessionID?: string;
 }

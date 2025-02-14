@@ -1,15 +1,44 @@
-import { TokenManager } from "./token";
+import { TokenManager } from "../auth/token";
 import { api } from "../services/api";
 import { Token } from "../types/auth";
 
 export class SessionManager {
+  private static instance: SessionManager | null = null;
   private tokenManager: TokenManager;
   private refreshInterval: NodeJS.Timeout | null = null;
   private readonly REFRESH_INTERVAL = 5 * 60 * 1000; // 5 minutes
   private readonly REFRESH_THRESHOLD = 10 * 60 * 1000; // 10 minutes
 
   constructor() {
+    console.log("[SessionManager] Creating new instance");
     this.tokenManager = new TokenManager();
+  }
+
+  public static getInstance(): SessionManager {
+    if (!SessionManager.instance) {
+      SessionManager.instance = new SessionManager();
+    }
+    return SessionManager.instance;
+  }
+
+  public static createInstance(): SessionManager {
+    return new SessionManager();
+  }
+
+  async getToken(): Promise<string | null> {
+    console.log("[SessionManager.getToken] Getting token from token manager");
+    try {
+      const token = await this.tokenManager.getToken();
+      console.debug("[SessionManager.getToken] Token state:", {
+        hasToken: !!token,
+        tokenLength: token?.length,
+        tokenPrefix: token ? token.substring(0, 10) + "..." : null,
+      });
+      return token;
+    } catch (error) {
+      console.error("[SessionManager.getToken] Error getting token:", error);
+      return null;
+    }
   }
 
   async startTokenRefreshSchedule(): Promise<void> {
@@ -82,7 +111,13 @@ export class SessionManager {
       }
 
       try {
-        await api.refreshToken(token);
+        const response = await api.refreshToken(token);
+        if (response?.encryptedToken && response?.keyAttributes) {
+          await this.tokenManager.saveToken(response);
+          console.log("[SessionManager.refreshToken] Token refreshed and saved successfully");
+        } else {
+          throw new Error("Invalid response from refresh token API");
+        }
       } catch (error) {
         const isUnauthorized =
           error instanceof Error && (error.message.includes("401") || error.message.includes("404"));

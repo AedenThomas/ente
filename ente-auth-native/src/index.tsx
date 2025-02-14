@@ -2,12 +2,12 @@ import { ActionPanel, Action, Form, showToast, Toast, useNavigation, List } from
 import React, { useState, useEffect } from "react";
 import { SRPAuth } from "./auth/srp";
 import { PasskeyAuth } from "./auth/passkey";
-import { SessionManager } from "./auth/session";
+import { SessionManager } from "./services/sessionManager";
 import { TokenManager } from "./auth/token";
 import { Clipboard } from "@raycast/api";
 import { generateOTPs, Code } from "./services/otp";
-import { decryptAuthenticatorData, AuthenticatorKey } from "./services/crypto";
-import fetch from "node-fetch";
+import { decryptAuthenticatorData } from "./services/crypto";
+import { api } from "./services/api";
 
 interface MainViewProps {
   onLogout?: () => void;
@@ -18,12 +18,23 @@ function MainView({ onLogout }: MainViewProps): JSX.Element {
   const [codes, setCodes] = useState<Code[]>([]);
   const [otpMap, setOtpMap] = useState<Record<string, [string, string]>>({});
   const [isLoading, setIsLoading] = useState(true);
-  const sessionManager = new SessionManager();
+  const [error, setError] = useState<string | null>(null);
+  const [sessionManager] = useState(() => new SessionManager()); // Create single instance
 
   useEffect(() => {
-    fetchCodes();
-    const interval = setInterval(fetchCodes, 30000); // Refresh every 30 seconds
-    return () => clearInterval(interval);
+    let mounted = true;
+    const fetchAndUpdate = async () => {
+      if (!mounted) return;
+      console.debug("[fetchCodes] About to call fetchCodes");
+      await fetchCodes();
+    };
+
+    fetchAndUpdate();
+    const interval = setInterval(fetchAndUpdate, 30000); // Refresh every 30 seconds
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
   }, []);
 
   useEffect(() => {
@@ -56,131 +67,86 @@ function MainView({ onLogout }: MainViewProps): JSX.Element {
 
   async function fetchCodes() {
     try {
-      console.log("Fetching authentication codes...");
+      setError(null);
       const token = await sessionManager.getToken();
-      console.log("Got token:", token ? "Token exists" : "No token found");
-      if (token) {
-        console.log("Token length:", token.length);
-        console.log("Token first/last 10 chars:", token.slice(0, 10) + "..." + token.slice(-10));
-        // Check for any non-printable or special characters
-        const hasSpecialChars = /[^\x20-\x7E]/.test(token);
-        console.log("Token has special characters:", hasSpecialChars);
-        if (hasSpecialChars) {
-          console.log(
-            "Special characters found at positions:",
-            [...token].map((char, i) => (/[^\x20-\x7E]/.test(char) ? i : -1)).filter((i) => i !== -1)
-          );
-        }
-      }
+      console.debug("[fetchCodes] Retrieved token:", {
+        token,
+        tokenSnippet: token ? token.substring(0, 10) + "..." : null,
+      });
 
       if (!token) {
-        throw new Error("No authentication token found");
+        console.error("[fetchCodes] No valid token found, session expired");
+        throw new Error("Session expired. Please log in again.");
       }
 
-      // First, get the authenticator key
-      console.log("Fetching authenticator key...");
-      const headers = {
-        "X-Auth-Token": token,
-        "Content-Type": "application/json",
-      };
-      console.log("Request headers:", headers);
+      console.debug("[fetchCodes] Making request to get authenticator key with token:", token);
+      const keyData = await api.getAuthenticatorKey();
 
-      const keyResponse = await fetch("https://api.ente.io/authenticator/key", {
-        method: "GET",
-        headers,
-      });
-
-      console.log("Key response status:", keyResponse.status);
-      const keyResponseText = await keyResponse.text();
-      console.log("Key response body:", keyResponseText);
-
-      if (!keyResponse.ok) {
-        if (keyResponse.status === 404) {
-          console.log("No authenticator key found - user might not have any codes yet");
-          setCodes([]);
-          return;
-        }
-        throw new Error(`Failed to fetch authenticator key: ${keyResponse.status} ${keyResponseText}`);
+      if (keyData.error === "NOT_FOUND") {
+        console.debug("[fetchCodes] No authenticator key found - user might not have any codes yet");
+        setCodes([]);
+        return;
       }
 
-      const keyData = JSON.parse(keyResponseText) as AuthenticatorKey;
-      console.log("Decrypting authenticator key...");
-      const authenticatorKey = await decryptAuthenticatorData(keyData.encryptedKey);
-      console.log("Authenticator key decrypted successfully");
+      console.debug("[fetchCodes] Decrypting authenticator key");
+      await decryptAuthenticatorData(keyData.encryptedKey);
 
       // Then, get the authenticator entities
-      console.log("Fetching authenticator entities...");
-      const codesResponse = await fetch("https://api.ente.io/authenticator/diff", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          sinceTime: 0,
-          limit: 500,
-        }),
+      console.debug("[fetchCodes] Fetching authenticator codes");
+
+      // Log token again before making the next request
+      const latestToken = await sessionManager.getToken();
+      console.debug("[fetchCodes] Latest token before fetching codes:", {
+        latestToken,
+        snippet: latestToken ? latestToken.substring(0, 10) + "..." : null,
       });
-
-      console.log("Codes response status:", codesResponse.status);
-      const codesResponseText = await codesResponse.text();
-      console.log("Codes response body:", codesResponseText);
-
-      if (!codesResponse.ok) {
-        throw new Error(`Failed to fetch codes: ${codesResponse.status} ${codesResponseText}`);
+      if (!latestToken) {
+        throw new Error("Session expired while fetching codes");
       }
 
-      let data;
-      try {
-        data = JSON.parse(codesResponseText);
-        // Filter out deleted codes and transform to our Code type
-        const activeCodes = await Promise.all(
-          data
-            .filter((entity: { isDeleted: boolean }) => !entity.isDeleted)
-            .map(async (entity: { id: string; data: string; header: string }) => {
-              try {
-                const decryptedData = await decryptAuthenticatorData(entity.data);
-                const url = new URL(decryptedData);
-                const issuer = url.searchParams.get("issuer") || url.pathname.split(":")[0].substring(1) || "";
-                return {
-                  id: entity.id,
-                  type: url.protocol.startsWith("otpauth://totp")
-                    ? "totp"
-                    : url.protocol.startsWith("otpauth://hotp")
-                    ? "hotp"
-                    : url.hostname === "steam"
-                    ? "steam"
-                    : "totp",
-                  account: url.pathname.split(":")[1] || "",
-                  issuer,
-                  length: parseInt(url.searchParams.get("digits") || "6"),
-                  period: parseInt(url.searchParams.get("period") || "30"),
-                  algorithm: (url.searchParams.get("algorithm") || "sha1").toLowerCase() as
-                    | "sha1"
-                    | "sha256"
-                    | "sha512",
-                  counter: url.searchParams.get("counter")
-                    ? parseInt(url.searchParams.get("counter") || "0")
-                    : undefined,
-                  secret: url.searchParams.get("secret") || "",
-                } as Code;
-              } catch (error) {
-                console.error("Failed to parse code URI:", error);
-                return null;
-              }
-            })
-        );
+      const data = await api.getAuthenticatorCodes();
+      const activeCodes = await Promise.all(
+        data
+          .filter((entity: { isDeleted: boolean }) => !entity.isDeleted)
+          .map(async (entity: { id: string; data: string; header: string }) => {
+            try {
+              const decryptedData = await decryptAuthenticatorData(entity.data);
+              const url = new URL(decryptedData);
+              const issuer = url.searchParams.get("issuer") || url.pathname.split(":")[0].substring(1) || "";
+              return {
+                id: entity.id,
+                type: url.protocol.startsWith("otpauth://totp")
+                  ? "totp"
+                  : url.protocol.startsWith("otpauth://hotp")
+                  ? "hotp"
+                  : url.hostname === "steam"
+                  ? "steam"
+                  : "totp",
+                account: url.pathname.split(":")[1] || "",
+                issuer,
+                length: parseInt(url.searchParams.get("digits") || "6"),
+                period: parseInt(url.searchParams.get("period") || "30"),
+                algorithm: (url.searchParams.get("algorithm") || "sha1").toLowerCase() as "sha1" | "sha256" | "sha512",
+                counter: url.searchParams.get("counter") ? parseInt(url.searchParams.get("counter") || "0") : undefined,
+                secret: url.searchParams.get("secret") || "",
+              } as Code;
+            } catch (error) {
+              console.error("Failed to parse code URI:", error);
+              return null;
+            }
+          })
+      );
 
-        const validCodes = activeCodes.filter((code): code is Code => code !== null);
-        console.log("Parsed codes:", validCodes);
-        setCodes(validCodes);
-      } catch (parseError) {
-        console.error("Failed to parse response:", parseError);
-        throw new Error("Invalid response format from server");
-      }
+      const validCodes = activeCodes.filter((code): code is Code => code !== null);
+      setCodes(validCodes);
     } catch (error) {
-      console.error("Error in fetchCodes:", error);
+      console.error("[fetchCodes] Error encountered:", error);
+      const message = error instanceof Error ? error.message : "Failed to fetch authentication codes";
+      setError(message);
       await showToast({
         style: Toast.Style.Failure,
         title: "Error",
-        message: error instanceof Error ? error.message : "Failed to fetch authentication codes",
+        message,
       });
     } finally {
       setIsLoading(false);
@@ -189,6 +155,7 @@ function MainView({ onLogout }: MainViewProps): JSX.Element {
 
   async function handleLogout() {
     try {
+      await sessionManager.stopTokenRefreshSchedule(); // Stop token refresh scheduling
       await sessionManager.logout();
       await showToast({
         style: Toast.Style.Success,
@@ -229,6 +196,40 @@ function MainView({ onLogout }: MainViewProps): JSX.Element {
     return <List isLoading={true} />;
   }
 
+  if (error) {
+    return (
+      <List>
+        <List.EmptyView
+          title="Error"
+          description={error}
+          actions={
+            <ActionPanel>
+              <Action title="Try Again" onAction={fetchCodes} />
+              <Action title="Logout" onAction={handleLogout} />
+            </ActionPanel>
+          }
+        />
+      </List>
+    );
+  }
+
+  if (codes.length === 0) {
+    return (
+      <List>
+        <List.EmptyView
+          title="No Authentication Codes"
+          description="You haven't added any authentication codes yet. Add them through the mobile app first."
+          actions={
+            <ActionPanel>
+              <Action title="Refresh" onAction={fetchCodes} />
+              <Action title="Logout" onAction={handleLogout} />
+            </ActionPanel>
+          }
+        />
+      </List>
+    );
+  }
+
   return (
     <List>
       {codes.map((code) => {
@@ -238,11 +239,15 @@ function MainView({ onLogout }: MainViewProps): JSX.Element {
             key={code.id}
             title={code.issuer}
             subtitle={code.account}
-            accessories={[{ text: currentOTP }, { text: `Next: ${nextOTP}` }]}
+            accessories={[
+              { text: currentOTP, tooltip: "Current code" },
+              { text: `Next: ${nextOTP}`, tooltip: "Next code" },
+            ]}
             actions={
               <ActionPanel>
                 <Action title="Copy Current Code" onAction={() => copyToClipboard(currentOTP)} />
                 <Action title="Copy Next Code" onAction={() => copyToClipboard(nextOTP)} />
+                <Action title="Refresh" onAction={fetchCodes} />
                 <Action title="Logout" onAction={handleLogout} />
               </ActionPanel>
             }
@@ -263,9 +268,9 @@ export default function Command(): JSX.Element {
 
   // Create shared instances
   const tokenManager = new TokenManager();
-  const sessionManager = new SessionManager();
   const srpAuth = new SRPAuth(tokenManager);
   const passkeyAuth = new PasskeyAuth();
+  const sessionManager = new SessionManager();
 
   async function handleSubmit() {
     if (!email || (!showOTPField && !password) || (showOTPField && !otp)) {
@@ -297,6 +302,7 @@ export default function Command(): JSX.Element {
           const result = await passkeyAuth.verifyPasskey(otpResponse.id.toString(), otpResponse.passkeySessionID);
           await tokenManager.saveToken(result);
           await tokenManager.saveUserId(otpResponse.id.toString());
+          await sessionManager.startTokenRefreshSchedule(); // Start token refresh scheduling
 
           await showToast({
             style: Toast.Style.Success,
@@ -310,14 +316,16 @@ export default function Command(): JSX.Element {
 
         // Token is already saved by verifyEmailOTP
         await tokenManager.saveUserId(otpResponse.id.toString());
+        await sessionManager.startTokenRefreshSchedule(); // Start token refresh scheduling
       } else {
         try {
           // Try normal SRP authentication
           session = await srpAuth.login(email, password);
-          await tokenManager.saveToken(session.keyAttributes, session.encryptedToken);
+          await tokenManager.saveToken(session);
           await tokenManager.saveUserId(session.id.toString());
+          await sessionManager.startTokenRefreshSchedule(); // Start token refresh scheduling
         } catch (error) {
-          if (error.message === "EMAIL_MFA_REQUIRED") {
+          if (error instanceof Error && error.message === "EMAIL_MFA_REQUIRED") {
             setShowOTPField(true);
             setIsLoading(false);
             return;
@@ -338,7 +346,7 @@ export default function Command(): JSX.Element {
       await showToast({
         style: Toast.Style.Failure,
         title: "Authentication Failed",
-        message: error.message || "Please try again",
+        message: error instanceof Error ? error.message : "Please try again",
       });
     } finally {
       setIsLoading(false);
@@ -349,7 +357,7 @@ export default function Command(): JSX.Element {
     <Form
       actions={
         <ActionPanel>
-          <Action.SubmitForm title={showOTPField ? "Verify OTP" : "Login"} onSubmit={handleSubmit} />
+          <Action.SubmitForm title={showOTPField ? "Verify Otp" : "Login"} onSubmit={handleSubmit} />
         </ActionPanel>
       }
       isLoading={isLoading}
