@@ -1,14 +1,34 @@
 import { LocalStorage } from "@raycast/api";
 import { api } from "../services/api";
-import { Token, TokenInfo, KeyAttributes } from "../types/auth";
-import { decryptToken as cryptoDecryptToken, bytesToBase64, base64ToBytes } from "../utils/crypto";
-import { sodium } from "../utils/sodium";
+import { Token, TokenInfo } from "../types/auth";
+import { decryptToken as cryptoDecryptToken, bytesToBase64 } from "../utils/crypto";
 
-export interface TokenResponse extends Token {
+// Define KeyAttributes interface if not already defined in types/auth.ts
+interface KeyAttributes {
+  kekSalt: string;
+  kekHash: string;
+  encryptedKey: string;
+  keyDecryptionNonce: string;
+  publicKey: string;
+  encryptedSecretKey: string;
+  secretKeyDecryptionNonce: string;
+  memLimit: number;
+  opsLimit: number;
   masterKeyEncryptedWithRecoveryKey?: string;
   masterKeyDecryptionNonce?: string;
   recoveryKeyEncryptedWithMasterKey?: string;
   recoveryKeyDecryptionNonce?: string;
+}
+
+export interface TokenResponse extends Token {
+  id: number;
+  keyAttributes: KeyAttributes;
+  encryptedToken: string;
+  hasSetKeys?: boolean;
+  twoFactorSessionID?: string;
+  twoFactorSessionIDV2?: string;
+  passkeySessionID?: string;
+  accountsUrl?: string;
 }
 
 export class TokenManager {
@@ -50,7 +70,7 @@ export class TokenManager {
     }
   }
 
-  private async saveEncryptedTokenAndAttributes(encryptedToken: string, keyAttributes: any): Promise<void> {
+  private async saveEncryptedTokenAndAttributes(encryptedToken: string, keyAttributes: KeyAttributes): Promise<void> {
     console.debug("[TokenManager.saveEncryptedTokenAndAttributes] Saving encrypted data:", {
       encryptedTokenLength: encryptedToken?.length,
       keyAttributeKeys: keyAttributes ? Object.keys(keyAttributes) : [],
@@ -142,7 +162,7 @@ export class TokenManager {
           : null,
       });
 
-      await this.saveUserId(response.id);
+      await this.saveUserId(response.id.toString());
     } catch (error) {
       console.error("[TokenManager.saveToken] Error saving token:", {
         error: error instanceof Error ? error.message : "Unknown error",
@@ -297,7 +317,7 @@ export class TokenManager {
     }
   }
 
-  async getStoredKeyAttributes(): Promise<any | null> {
+  async getStoredKeyAttributes(): Promise<KeyAttributes | null> {
     try {
       const attrs = await LocalStorage.getItem<string>(this.keyAttributesKey);
       console.debug("[TokenManager.getStoredKeyAttributes] Retrieved key attributes:", {

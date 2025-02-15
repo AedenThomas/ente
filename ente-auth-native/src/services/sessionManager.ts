@@ -1,6 +1,5 @@
 import { TokenManager } from "../auth/token";
 import { api } from "../services/api";
-import { Token } from "../types/auth";
 
 export class SessionManager {
   private static instance: SessionManager | null = null;
@@ -111,7 +110,7 @@ export class SessionManager {
       }
 
       try {
-        const response = await api.refreshToken(token);
+        const response = await api.refreshToken({ token });
         if (response?.encryptedToken && response?.keyAttributes) {
           await this.tokenManager.saveToken(response);
           console.log("[SessionManager.refreshToken] Token refreshed and saved successfully");

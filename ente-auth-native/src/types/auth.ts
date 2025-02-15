@@ -28,13 +28,29 @@ export interface SRPSession extends Token {
 }
 
 export interface Token {
-  id: string;
-  keyAttributes?: KeyAttributes;
-  encryptedToken: string;
+  id: number;
   token?: string;
+  encryptedToken?: string;
+  keyAttributes?: {
+    kekSalt: string;
+    kekHash: string;
+    encryptedKey: string;
+    keyDecryptionNonce: string;
+    publicKey: string;
+    encryptedSecretKey: string;
+    secretKeyDecryptionNonce: string;
+    memLimit: number;
+    opsLimit: number;
+    masterKeyEncryptedWithRecoveryKey?: string;
+    masterKeyDecryptionNonce?: string;
+    recoveryKeyEncryptedWithMasterKey?: string;
+    recoveryKeyDecryptionNonce?: string;
+  };
+  hasSetKeys?: boolean;
   twoFactorSessionID?: string;
+  twoFactorSessionIDV2?: string;
   passkeySessionID?: string;
-  srpM2?: string;
+  accountsUrl?: string;
 }
 
 export interface TokenInfo {
@@ -80,7 +96,7 @@ export interface AuthError {
 }
 
 export interface EmailOTPResponse extends Token {
-  id: string;
+  id: number;
   keyAttributes: KeyAttributes;
   encryptedToken: string;
 }
@@ -102,6 +118,17 @@ export interface TokenRefreshResponse {
     recoveryKeyEncryptedWithMasterKey?: string;
     recoveryKeyDecryptionNonce?: string;
   };
+  encryptedToken: string;
+  hasSetKeys?: boolean;
+  twoFactorSessionID?: string;
+  twoFactorSessionIDV2?: string;
+  passkeySessionID?: string;
+  accountsUrl?: string;
+}
+
+export interface TokenResponse {
+  id: number;
+  keyAttributes: KeyAttributes;
   encryptedToken: string;
   hasSetKeys?: boolean;
   twoFactorSessionID?: string;

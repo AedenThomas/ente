@@ -100,9 +100,9 @@ export class SRPAuth {
   }
 
   private async getStoredState(): Promise<{ email?: string; password?: string; srpAttributes?: SRPAttributes }> {
-    const email = await LocalStorage.getItem(STORAGE_KEYS.EMAIL);
-    const password = await LocalStorage.getItem(STORAGE_KEYS.PASSWORD);
-    const srpAttributesStr = await LocalStorage.getItem(STORAGE_KEYS.SRP_ATTRIBUTES);
+    const email = await LocalStorage.getItem<string>(STORAGE_KEYS.EMAIL);
+    const password = await LocalStorage.getItem<string>(STORAGE_KEYS.PASSWORD);
+    const srpAttributesStr = await LocalStorage.getItem<string>(STORAGE_KEYS.SRP_ATTRIBUTES);
 
     const srpAttributes = srpAttributesStr ? JSON.parse(srpAttributesStr) : undefined;
 
@@ -112,7 +112,11 @@ export class SRPAuth {
       hasSrpAttributes: !!srpAttributes,
     });
 
-    return { email, password, srpAttributes };
+    return {
+      email: email || undefined,
+      password: password || undefined,
+      srpAttributes,
+    };
   }
 
   async login(email: string, password: string): Promise<SRPSession> {
@@ -314,6 +318,7 @@ export class SRPAuth {
         id: verificationResponse.id,
         keyAttributes: verificationResponse.keyAttributes,
         encryptedToken: verificationResponse.encryptedToken,
+        srpM2: verificationResponse.srpM2,
       };
     } catch (error) {
       console.error("[SRPAuth.completeSRPLogin] SRP login failed:", {
@@ -388,7 +393,15 @@ export class SRPAuth {
       // Clear stored state
       await this.clearState();
 
-      return response;
+      // Cast response to EmailOTPResponse
+      const emailOTPResponse: EmailOTPResponse = {
+        id: response.id,
+        keyAttributes: response.keyAttributes!,
+        encryptedToken: response.encryptedToken,
+        passkeySessionID: response.passkeySessionID,
+      };
+
+      return emailOTPResponse;
     } catch (error) {
       console.error("[SRPAuth.verifyEmailOTP] OTP verification failed:", error);
       throw error;

@@ -1,6 +1,5 @@
 import { TokenManager } from "./token";
 import { api } from "../services/api";
-import { Token } from "../types/auth";
 
 export class SessionManager {
   private tokenManager: TokenManager;
@@ -82,7 +81,13 @@ export class SessionManager {
       }
 
       try {
-        await api.refreshToken(token);
+        const response = await api.refreshToken({ token });
+        if (response?.encryptedToken && response?.keyAttributes) {
+          await this.tokenManager.saveToken(response);
+          console.log("[SessionManager.refreshToken] Token refreshed and saved successfully");
+        } else {
+          throw new Error("Invalid response from refresh token API");
+        }
       } catch (error) {
         const isUnauthorized =
           error instanceof Error && (error.message.includes("401") || error.message.includes("404"));

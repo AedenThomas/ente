@@ -18,7 +18,7 @@ export class Steam {
     buffer.writeInt32BE(0, 0);
     buffer.writeInt32BE(Math.floor(timestamp / 30), 4);
 
-    const hmac = createHmac("sha1", Buffer.from(this.secret, "base32"));
+    const hmac = createHmac("sha1", Buffer.from(this.secret, "utf8"));
     const hash = hmac.update(buffer).digest();
 
     const start = hash[19] & 0xf;

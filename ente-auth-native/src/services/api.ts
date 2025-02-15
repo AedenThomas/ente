@@ -1,49 +1,54 @@
 import { environment } from "../config/environment";
-import { AuthError, PasskeySession, PasskeyVerificationResult, SRPAttributes, Token, TokenInfo } from "../types/auth";
+import { PasskeySession, PasskeyVerificationResult, SRPAttributes, Token, TokenInfo } from "../types/auth";
 import { open } from "@raycast/api";
-import fetch from "node-fetch";
-import type { RequestInit, HeadersInit } from "node-fetch";
+import fetch, { Headers } from "node-fetch";
+import type { RequestInit } from "node-fetch";
 import { SessionManager } from "../auth/session";
-import { TokenManager } from "../auth/token";
-import { bytesToBase64 } from "../utils/crypto";
+import { TokenManager, TokenResponse } from "../auth/token";
 
-type ExtendedHeaders = HeadersInit & {
-  [key: string]: string | undefined;
-};
+type CustomHeaders = Record<string, string>;
 
-class ApiService {
+// Add SRPSession type
+interface SRPSession {
+  id: string;
+  keyAttributes: {
+    encryptedKey: string;
+    keyDecryptionNonce: string;
+    encryptedSecretKey: string;
+    secretKeyDecryptionNonce: string;
+    publicKey: string;
+  };
+  encryptedToken: string;
+  srpM2: string;
+}
+
+export class ApiService {
   private baseUrl: string;
   private sessionManager: SessionManager;
   private tokenManager: TokenManager;
 
-  constructor() {
-    this.baseUrl = environment.apiUrl;
-    this.sessionManager = new SessionManager();
-    this.tokenManager = new TokenManager();
+  constructor(baseUrl: string, sessionManager: SessionManager, tokenManager: TokenManager) {
+    this.baseUrl = baseUrl;
+    this.sessionManager = sessionManager;
+    this.tokenManager = tokenManager;
   }
 
-  private async getAuthHeaders(): Promise<HeadersInit> {
+  private async getAuthHeaders(): Promise<CustomHeaders> {
     const token = await this.tokenManager.getToken();
-    if (!token) {
-      return { "Content-Type": "application/json" };
+    const headers: CustomHeaders = {
+      "Content-Type": "application/json",
+    };
+
+    if (token) {
+      headers["X-Auth-Token"] = token;
     }
 
-    console.log("[API.getAuthHeaders] Using token:", {
-      length: token.length,
-      prefix: token.substring(0, 16),
-      suffix: token.substring(token.length - 16),
-    });
-
-    return {
-      "Content-Type": "application/json",
-      "X-Auth-Token": token, // Use URL-safe base64 token directly
-    };
+    return headers;
   }
 
-  async request<T>(endpoint: string, options: RequestInit = {}, retryCount = 0): Promise<T> {
+  async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     console.log(`[API.request] Making request to: ${this.baseUrl}${endpoint}`);
 
-    // Add debug logging for token state
     const currentToken = await this.tokenManager.getToken();
     console.debug("[API.request] Current token state:", {
       hasToken: !!currentToken,
@@ -51,7 +56,6 @@ class ApiService {
       endpoint,
       method: options.method,
       isRefreshRequest: endpoint.includes("/session-refresh"),
-      retryCount,
     });
 
     const headers = await this.getAuthHeaders();
@@ -64,106 +68,71 @@ class ApiService {
     try {
       const response = await fetch(`${this.baseUrl}${endpoint}`, {
         ...options,
-        headers: {
+        headers: new Headers({
           ...headers,
-          ...options.headers,
-        },
-      });
-
-      console.debug("[API.request] Response:", {
-        status: response.status,
-        statusText: response.statusText,
-        headers: Object.fromEntries(response.headers.entries()),
+          ...(options.headers || {}),
+        }),
       });
 
       const text = await response.text();
-      console.debug("[API.request] Response text:", {
-        length: text.length,
-        preview: text.substring(0, 200) + (text.length > 200 ? "..." : ""),
-        isJSON: text.startsWith("{") || text.startsWith("["),
-      });
 
       if (!response.ok) {
-        // Only attempt refresh if:
-        // 1. Got 401
-        // 2. Not already a refresh request
-        // 3. Not already retrying
-        // 4. Have current token
-        if (response.status === 401 && !endpoint.includes("/session-refresh") && retryCount === 0 && currentToken) {
+        if (response.status === 401 && !endpoint.includes("/session-refresh") && currentToken) {
           console.log("[API.request] Got 401, attempting token refresh");
           try {
-            const refreshResponse = await this.refreshToken();
-
-            if (refreshResponse?.encryptedToken && refreshResponse?.keyAttributes) {
-              await this.tokenManager.saveToken(refreshResponse);
-              console.log("[API.request] Token refreshed successfully, retrying original request");
-              return this.request(endpoint, options, retryCount + 1);
-            }
+            await this.refreshToken({ token: currentToken });
+            return this.request<T>(endpoint, options);
           } catch (error) {
-            console.error("[API.request] Token refresh failed:", {
-              error: error instanceof Error ? error.message : "Unknown error",
-              type: error instanceof Error ? error.constructor.name : typeof error,
-              status: error instanceof Error ? (error as any).status : undefined,
-              stack: error instanceof Error ? error.stack : undefined,
-              endpoint,
-              responseStatus: response.status,
-            });
-
-            // Only clear token on auth errors
+            console.error("[API.request] Token refresh failed:", error);
             if (error instanceof Error && error.message.includes("401")) {
               await this.tokenManager.clearToken();
             }
           }
         }
 
-        // Add more context to error message
-        const errorMessage = `Request failed: ${response.status} ${text}`;
-        console.error("[API.request] Request failed:", {
-          status: response.status,
-          endpoint,
-          text: text.substring(0, 200),
-          headers: response.headers,
-        });
-        throw new Error(errorMessage);
+        throw new Error(`Request failed: ${response.status} ${text}`);
       }
 
-      // Only parse as JSON if we have content and it looks like JSON
       if (text && (text.startsWith("{") || text.startsWith("["))) {
-        try {
-          return JSON.parse(text);
-        } catch (error) {
-          console.error("[API.request] Failed to parse JSON response:", error);
-          throw new Error("Invalid JSON response");
-        }
+        return JSON.parse(text) as T;
       }
       return null as T;
     } catch (error) {
-      console.error("[API.request] Request error:", {
-        endpoint,
-        error: error instanceof Error ? error.message : "Unknown error",
-        type: error instanceof Error ? error.constructor.name : typeof error,
-        stack: error instanceof Error ? error.stack : undefined,
-      });
+      console.error("[API.request] Request error:", error);
       throw error;
     }
   }
 
-  private async refreshToken(): Promise<void> {
+  async refreshToken(params: { token: string }): Promise<TokenResponse> {
     try {
-      const response = await this.request({
-        endpoint: "/users/session/refresh", // Updated endpoint
+      const response = await fetch(`${this.baseUrl}/users/session/refresh`, {
         method: "POST",
-        isRefreshRequest: true,
+        headers: new Headers({
+          "Content-Type": "application/json",
+          "X-Auth-Token": params.token,
+        }),
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        if (data.token) {
-          await this.tokenManager.setToken(data.token);
+      const text = await response.text();
+      if (!response.ok) {
+        // Clear token on 401 or 404
+        if (response.status === 401 || response.status === 404) {
+          await this.tokenManager.clearToken();
         }
-      } else {
-        throw new Error(`Token refresh failed: ${response.status} ${await response.text()}`);
+        throw new Error(`Token refresh failed: ${response.status} ${text}`);
       }
+
+      if (!text) {
+        throw new Error("Empty response from refresh token API");
+      }
+
+      const data = JSON.parse(text) as TokenResponse;
+      if (!data.encryptedToken || !data.keyAttributes) {
+        throw new Error("Invalid response from refresh token API");
+      }
+
+      await this.tokenManager.saveToken(data);
+      return data;
     } catch (error) {
       console.error("[API.refreshToken] Error refreshing token:", {
         error: error instanceof Error ? error.message : "Unknown error",
@@ -202,27 +171,14 @@ class ApiService {
       },
     });
 
-    const response = await this.request<SRPSession>("/users/srp/verify-session", {
+    return this.request<SRPSession>("/users/srp/verify-session", {
       method: "POST",
       body: JSON.stringify({
         sessionID,
         srpUserID,
-        srpM1, // M1 is already base64 encoded
+        srpM1,
       }),
     });
-
-    console.log("[api.verifySRPSession] Session verification response:", {
-      hasResponse: !!response,
-      hasKeyAttributes: !!response?.keyAttributes,
-      hasEncryptedToken: !!response?.encryptedToken,
-      hasM2: !!response?.srpM2,
-      m2Length: response?.srpM2?.length,
-      m2FirstChars: response?.srpM2?.substring(0, 10),
-      m2Base64: response?.srpM2,
-      responseKeys: response ? Object.keys(response) : [],
-    });
-
-    return response;
   }
 
   async sendEmailOTP(email: string): Promise<void> {
@@ -308,4 +264,4 @@ export interface AuthenticatorCode {
   isDeleted: boolean;
 }
 
-export const api = new ApiService();
+export const api = new ApiService(environment.apiUrl, new SessionManager(), new TokenManager());
