@@ -1,10 +1,11 @@
 import { useState, useEffect } from "react";
 import { List, Action, ActionPanel, Icon, Color, showToast, Toast, Clipboard, Form } from "@raycast/api";
-import { getAuthenticatorService } from "./services/authenticator";
+import { getAuthenticatorService, clearAuthenticatorServiceCache } from "./services/authenticator";
 import { getStorageService } from "./services/storage";
 import { getApiClient, resetApiClient } from "./services/api";
 import { deriveKeyEncryptionKey, decryptMasterKey, decryptSecretKey, decryptSessionToken } from "./services/crypto";
 import { determineAuthMethod, SRPAuthenticationService } from "./services/srp";
+import { generateTOTP, getRemainingSeconds, getProgress } from "./utils/totp";
 import { AuthCode, AuthorizationResponse, UserCredentials } from "./types";
 
 export default function Index() {
@@ -21,16 +22,20 @@ export default function Index() {
   const [otpRequested, setOtpRequested] = useState(false);
   const [useSRP, setUseSRP] = useState(false);
 
-  // Enhanced login status check with session restoration (optimized)
+  // Offline-first login status check (no network dependency)
   const checkLoginStatus = async () => {
+    console.log("DEBUG: 🔍 Starting checkLoginStatus - tracing all network calls");
     try {
       const storage = getStorageService();
 
-      // First, try to restore from persistent session token
+      // First, try to restore from persistent session token (OFFLINE-FIRST)
+      console.log("DEBUG: 📱 Checking for stored session token...");
       const storedSession = await storage.getStoredSessionToken();
       if (storedSession) {
+        console.log("DEBUG: ✅ Found stored session token, attempting offline restoration");
         try {
-          // Set up API client with stored session
+          // Set up API client with stored session (NO NETWORK CALLS YET)
+          console.log("DEBUG: 🔧 Setting up API client (NO NETWORK CALLS)");
           resetApiClient();
           const apiClient = await getApiClient();
           apiClient.setToken(storedSession.token);
@@ -42,56 +47,83 @@ export default function Index() {
           };
           apiClient.setAuthenticationContext(authContext);
 
-          // Test if the stored token is still valid
-          const isValid = await apiClient.testTokenValidity();
+          // Store authentication context (no network needed)
+          console.log("DEBUG: 💾 Storing authentication context (NO NETWORK)");
+          try {
+            await storage.storeAuthenticationContext(authContext);
+          } catch (error) {
+            console.log("DEBUG: Failed to store auth context, continuing...", error);
+          }
 
-          if (isValid) {
-            // Try to store authentication context, but don't fail if encryption fails
-            try {
-              await storage.storeAuthenticationContext(authContext);
-            } catch (error) {
-              // Continue with session restoration even if context storage fails
-            }
+          // Initialize authenticator service (OFFLINE - uses cached data)
+          console.log("DEBUG: 🔐 Initializing authenticator service (SHOULD BE OFFLINE)");
+          const authenticatorService = getAuthenticatorService();
+          const initialized = await authenticatorService.init();
 
-            // Initialize authenticator service with restored session
-            const authenticatorService = getAuthenticatorService();
-            const initialized = await authenticatorService.init();
-
-            if (initialized) {
-              setIsLoggedIn(true);
-              await loadCodes();
-              return;
-            }
+          if (initialized) {
+            console.log("DEBUG: ✅ Session restored successfully (OFFLINE MODE)");
+            setIsLoggedIn(true);
+            console.log("DEBUG: 📋 About to call loadCodes() after session restoration with forceLoad=true");
+            await loadCodes(true); // forceLoad=true to bypass React state timing issue
+            return;
           } else {
+            console.log("DEBUG: ❌ Authenticator service initialization failed during session restoration");
+            console.log("DEBUG: Session token exists but master key missing - incomplete session");
+            // Clear the incomplete session data
             await storage.clearStoredSessionToken();
+            console.log("DEBUG: 🗑️ Cleared incomplete session token - user needs to re-authenticate");
           }
         } catch (error) {
-          console.error("Session restoration failed:", error);
-          await storage.clearStoredSessionToken();
+          console.log("DEBUG: ❌ Session restoration failed, trying fallback:", error);
+          console.log("DEBUG: 🕵️ ERROR DETAILS:", {
+            message: error instanceof Error ? error.message : 'Unknown',
+            stack: error instanceof Error ? error.stack : 'No stack',
+            name: error instanceof Error ? error.name : 'Unknown'
+          });
+          // Don't clear token immediately - it might work when back online
         }
+      } else {
+        console.log("DEBUG: ❌ No stored session token found");
       }
 
-      // Fallback: Try traditional credential-based login
+      // Fallback: Try traditional credential-based login (OFFLINE-FIRST)
+      console.log("DEBUG: 🔑 Checking for stored credentials...");
       const credentials = await storage.getCredentials();
 
       if (credentials) {
+        console.log("DEBUG: ✅ Found stored credentials, attempting offline initialization");
         const authenticatorService = getAuthenticatorService();
+        
+        console.log("DEBUG: 🔐 Initializing authenticator service with credentials (SHOULD BE OFFLINE)");
         const initialized = await authenticatorService.init();
 
         if (initialized) {
+          console.log("DEBUG: ✅ Credentials-based initialization successful (OFFLINE MODE)");
           setIsLoggedIn(true);
+          console.log("DEBUG: 📋 About to call loadCodes() after credentials init");
           await loadCodes();
           return;
+        } else {
+          console.log("DEBUG: ❌ Credentials-based initialization failed");
         }
+      } else {
+        console.log("DEBUG: ❌ No stored credentials found");
       }
 
+      console.log("DEBUG: 🚨 No valid session or credentials found, showing login");
       setIsLoggedIn(false);
       setShowLogin(true);
     } catch (error) {
-      console.error("Error checking login status:", error);
+      console.error("DEBUG: 💥 CRITICAL ERROR in checkLoginStatus:", error);
+      console.log("DEBUG: 🕵️ CRITICAL ERROR DETAILS:", {
+        message: error instanceof Error ? error.message : 'Unknown',
+        stack: error instanceof Error ? error.stack : 'No stack',
+        name: error instanceof Error ? error.name : 'Unknown'
+      });
       setIsLoggedIn(false);
       setShowLogin(true);
     } finally {
+      console.log("DEBUG: 🏁 checkLoginStatus complete, setting loading to false");
       setIsLoading(false);
     }
   };
@@ -103,35 +135,73 @@ export default function Index() {
       (code.issuer && code.issuer.toLowerCase().includes(searchText.toLowerCase())),
   );
 
-  // Load and refresh codes
-  const loadCodes = async () => {
-    if (!isLoggedIn) return;
+  // Load and refresh codes (offline-first) - with explicit login override for session restoration
+  const loadCodes = async (forceLoad: boolean = false) => {
+    console.log("DEBUG: 📋 Starting loadCodes (TRACING FOR NETWORK CALLS)");
+    console.log(`DEBUG: 🔍 Current login state: isLoggedIn=${isLoggedIn}, forceLoad=${forceLoad}`);
+    
+    if (!isLoggedIn && !forceLoad) {
+      console.log("DEBUG: ❌ Not logged in and no forceLoad, skipping loadCodes");
+      return;
+    }
 
     try {
+      console.log("DEBUG: 🔐 Getting authenticator service...");
       const authenticatorService = getAuthenticatorService();
+      
+      console.log("DEBUG: 📱 About to call getAuthCodes() - WATCH FOR NETWORK CALLS");
       const authCodes = await authenticatorService.getAuthCodes();
 
-      if (!authCodes || authCodes.length === 0) {
-        await showToast({
-          style: Toast.Style.Animated,
-          title: "No authentication codes found",
-          message: "Try syncing with the server or adding codes in the Ente app",
-        });
-      }
-
+      console.log(`DEBUG: ✅ getAuthCodes() returned ${authCodes.length} codes`);
       setCodes(authCodes);
+
+      // Only show "no codes" message if we actually have no codes
+      // Don't show network error messages during offline code loading
+      if (!authCodes || authCodes.length === 0) {
+        console.log("DEBUG: ❌ No cached codes found, but NOT showing toast (offline-first)");
+        // Don't show toast for offline - user can sync manually when ready
+      } else {
+        console.log(`DEBUG: ✅ Loaded ${authCodes.length} cached codes (offline-capable)`);
+      }
     } catch (error) {
-      console.error("Error getting auth codes:", error);
-      await showToast({
-        style: Toast.Style.Failure,
-        title: "Failed to get authentication codes",
-        message: "Please try syncing with the server",
+      console.error("DEBUG: 💥 ERROR in loadCodes:", error);
+      console.log("DEBUG: 🕵️ LOADCODES ERROR DETAILS:", {
+        message: error instanceof Error ? error.message : 'Unknown',
+        stack: error instanceof Error ? error.stack : 'No stack',
+        name: error instanceof Error ? error.name : 'Unknown'
       });
-      setCodes([]);
+      
+      // Check if it's a network error - if so, fail silently for offline use
+      const isNetworkError = error instanceof Error && 
+        (error.message.includes("Network error") || 
+         error.message.includes("ENOTFOUND") ||
+         error.message.includes("ECONNREFUSED"));
+      
+      console.log(`DEBUG: 🌐 Is this a network error? ${isNetworkError}`);
+      
+      if (!isNetworkError) {
+        // Only show error toast for non-network errors
+        console.log("DEBUG: 🚨 Showing error toast for non-network error");
+        await showToast({
+          style: Toast.Style.Failure,
+          title: "Failed to get authentication codes",
+          message: error instanceof Error ? error.message : "Unknown error",
+        });
+      } else {
+        console.log("DEBUG: 🔇 Network error during loadCodes - continuing silently for offline use");
+      }
+      
+      // Don't clear codes on network errors - keep any existing codes
+      if (!isNetworkError) {
+        console.log("DEBUG: 🗑️ Clearing codes due to non-network error");
+        setCodes([]);
+      } else {
+        console.log("DEBUG: 💾 Keeping existing codes despite network error");
+      }
     }
   };
 
-  // Sync with server
+  // Smart sync with offline fallback
   const syncCodes = async () => {
     if (!isLoggedIn) return;
 
@@ -140,28 +210,93 @@ export default function Index() {
 
       const toast = await showToast({
         style: Toast.Style.Animated,
-        title: "Syncing authenticator codes...",
+        title: "Syncing with server...",
       });
 
       const authenticatorService = getAuthenticatorService();
-      const syncResult = await authenticatorService.syncAuthenticator();
+      
+      // Get current codes before sync to compare
+      const currentCodes = await authenticatorService.getAuthCodes();
+      console.log(`DEBUG: SMART SYNC - Starting with ${currentCodes.length} local codes`);
+      
+      // Try incremental sync first (faster) and capture if server changes were received
+      let serverChangesReceived = false;
+      const originalSyncAuthenticator = authenticatorService.syncAuthenticator;
+      authenticatorService.syncAuthenticator = async function(forceCompleteSync: boolean = false) {
+        const result = await originalSyncAuthenticator.call(this, forceCompleteSync);
+        // Check if server actually returned changes by monitoring the sync process
+        // We'll set this flag based on whether the server diff was empty
+        return result;
+      };
+      
+      let syncResult = await authenticatorService.syncAuthenticator(false);
+      let authCodes = await authenticatorService.getAuthCodes();
+      
+      // ENHANCED SMART SYNC: Better detection of stale timestamp scenarios
+      // The key insight: if we had codes before sync, but final result is the same count,
+      // AND we know the server didn't send any changes, then we likely have a stale timestamp
+      const hadCodesBefore = currentCodes.length > 0;
+      const hasCodesAfter = authCodes.length > 0;
+      const finalCountSame = currentCodes.length === authCodes.length;
+      
+      // For now, let's use a simpler heuristic: if we have codes but the count didn't change,
+      // and we know deletions might have happened, force a complete sync
+      const shouldForceCompleteSync = hadCodesBefore && finalCountSame && 
+        // Check if the codes are exactly the same (indicating no server changes processed)
+        JSON.stringify(currentCodes.map(c => c.id).sort()) === JSON.stringify(authCodes.map(c => c.id).sort());
+      
+      if (shouldForceCompleteSync) {
+        console.log("DEBUG: SMART SYNC TRIGGERED - Same codes detected, forcing complete refresh for deletions...");
+        console.log(`DEBUG: Before sync: ${currentCodes.length} codes, After sync: ${authCodes.length} codes`);
+        console.log(`DEBUG: Same IDs detected - likely stale timestamp preventing deletion sync`);
+        toast.title = "Refreshing all data from server...";
+        
+        // Reset and do complete sync
+        const storage = getStorageService();
+        await storage.resetSyncState();
+        syncResult = await authenticatorService.syncAuthenticator(true);
+        authCodes = await authenticatorService.getAuthCodes();
+        
+        console.log(`DEBUG: Complete sync result - Final codes: ${authCodes.length}`);
+        console.log(`DEBUG: Complete sync IDs: ${authCodes.map(c => c.id).join(', ')}`);
+      }
 
       if (!syncResult) {
         throw new Error("Sync failed");
       }
 
-      const authCodes = await authenticatorService.getAuthCodes();
       setCodes(authCodes);
 
       toast.style = Toast.Style.Success;
-      toast.title = "Synced successfully!";
+      if (authCodes.length > 0) {
+        toast.title = "Sync successful!";
+        toast.message = `Retrieved ${authCodes.length} codes`;
+      } else {
+        toast.title = "Sync complete";
+        toast.message = "No authentication codes found";
+      }
     } catch (error) {
       console.error("Sync error:", error);
-      await showToast({
-        style: Toast.Style.Failure,
-        title: "Sync failed",
-        message: error instanceof Error ? error.message : "Unknown error",
-      });
+      
+      // Check if it's a network error and we have cached codes
+      const isNetworkError = error instanceof Error && 
+        (error.message.includes("Network error") || 
+         error.message.includes("ENOTFOUND") ||
+         error.message.includes("ECONNREFUSED"));
+      
+      if (isNetworkError && codes.length > 0) {
+        await showToast({
+          style: Toast.Style.Animated,
+          title: "Offline mode",
+          message: "Using cached codes. Sync when back online.",
+        });
+      } else {
+        await showToast({
+          style: Toast.Style.Failure,
+          title: "Sync failed",
+          message: isNetworkError ? "No internet connection" : (error instanceof Error ? error.message : "Unknown error"),
+        });
+      }
     } finally {
       setIsLoading(false);
     }
@@ -174,6 +309,9 @@ export default function Index() {
         style: Toast.Style.Animated,
         title: "Logging out...",
       });
+
+      // CRITICAL FIX: Clear cached authenticator key to prevent cross-account contamination
+      clearAuthenticatorServiceCache();
 
       const storage = getStorageService();
       await storage.clearAll();
@@ -325,12 +463,8 @@ export default function Index() {
             resetApiClient();
             await storage.resetSyncState();
 
-            const freshApiClient = await getApiClient();
-            const isTokenValid = await freshApiClient.testTokenValidity();
-
-            if (isTokenValid) {
-              console.log("DEBUG: ✅ SRP Authentication successful - full API access granted!");
-            }
+            // Skip token validation during login - we know it's valid since SRP just succeeded
+            console.log("DEBUG: ✅ SRP Authentication successful - session established!");
 
             // [PERSISTENCE FIX] Store decrypted authenticator key for session restoration
             try {
@@ -357,7 +491,7 @@ export default function Index() {
             // Switch to codes view
             setIsLoggedIn(true);
             setShowLogin(false);
-            await loadCodes();
+            await loadCodes(true); // forceLoad=true to bypass React state timing issue
           } catch (error) {
             console.error("DEBUG: SRP authentication failed:", error);
             throw error;
@@ -427,10 +561,28 @@ export default function Index() {
           toast.style = Toast.Style.Success;
           toast.title = "Login successful!";
 
+          // CRITICAL FIX: Initialize authenticator service to trigger smart auto-sync
+          try {
+            const authenticatorService = getAuthenticatorService();
+            await authenticatorService.init();
+            console.log("DEBUG: 💾 Attempting to store decrypted authenticator key for session persistence");
+
+            // Try to get the decrypted authenticator key and store it
+            const authCodes = await authenticatorService.getAuthCodes();
+            console.log("DEBUG: ✅ Authenticator key accessed successfully, should be cached and stored");
+
+            // The authenticator key should now be cached in the service
+          } catch (error) {
+            console.log(
+              "DEBUG: ⚠️ Could not store authenticator key during login, will be fetched during session restoration:",
+              error,
+            );
+          }
+
           // Switch to codes view
           setIsLoggedIn(true);
           setShowLogin(false);
-          await loadCodes();
+          await loadCodes(true); // forceLoad=true to bypass React state timing issue
         }
       }
     } catch (error) {
@@ -447,38 +599,18 @@ export default function Index() {
     }
   };
 
-  // Smart timer for countdown and code refresh (optimized)
+  // Initial login check (runs once on mount)
   useEffect(() => {
     checkLoginStatus();
+  }, []); // Empty dependency array - only run once on mount
 
+  // Timer setup for logged in users (separate effect)
+  useEffect(() => {
     let countdownTimer: NodeJS.Timeout | null = null;
     let refreshTimer: NodeJS.Timeout | null = null;
 
     if (isLoggedIn) {
-      // Update countdown every second (lightweight local calculation)
-      countdownTimer = setInterval(() => {
-        setCodes((prevCodes) =>
-          prevCodes.map((code) => {
-            if (code.type === "totp") {
-              const now = Date.now();
-              const period = code.period * 1000; // Convert to milliseconds
-              const timeInPeriod = now % period;
-              const remainingMs = period - timeInPeriod;
-              const remainingSeconds = Math.ceil(remainingMs / 1000);
-              const progress = (remainingMs / period) * 100;
-
-              return {
-                ...code,
-                remainingSeconds,
-                progress,
-              };
-            }
-            return code;
-          }),
-        );
-      }, 1000);
-
-      // Refresh codes only when they expire (every 30 seconds)
+      // Refresh codes function (shared between timers)
       const refreshCodes = async () => {
         try {
           const authenticatorService = getAuthenticatorService();
@@ -489,10 +621,55 @@ export default function Index() {
         }
       };
 
+      // Update countdown and regenerate codes every second
+      countdownTimer = setInterval(() => {
+        setCodes((prevCodes) => {
+          // Only update if we have codes and they need updating
+          if (prevCodes.length === 0) return prevCodes;
+          
+          return prevCodes.map((code) => {
+            if (code.type === "totp" || code.type === "steam") {
+              const now = Date.now();
+              const period = code.period * 1000; // Convert to milliseconds
+              const timeInPeriod = now % period;
+              const remainingMs = period - timeInPeriod;
+              const remainingSeconds = Math.ceil(remainingMs / 1000);
+              const progress = (remainingMs / period) * 100;
+
+              // CRITICAL FIX: Generate new TOTP code every second to ensure it's always current
+              const totpType = code.type === "steam" ? "steam" : "totp";
+              const newCode = generateTOTP(code.secret, code.period, code.digits, code.algorithm, totpType);
+
+              // Log when code actually changes (new period started)
+              if (newCode !== code.code) {
+                console.log(`DEBUG: 🔄 New ${code.type.toUpperCase()} code generated for ${code.issuer || code.name}: ${newCode.substring(0, 3)}***`);
+              }
+
+              // Always update with fresh values
+              return {
+                ...code,
+                code: newCode,
+                remainingSeconds,
+                progress,
+              };
+            } else if (code.type === "hotp") {
+              // HOTP codes don't change automatically
+              return {
+                ...code,
+                code: "------", // HOTP placeholder
+                remainingSeconds: undefined,
+                progress: undefined,
+              };
+            }
+            return code;
+          });
+        });
+      }, 1000);
+
       // Initial refresh
       refreshCodes();
 
-      // Set up periodic refresh (every 30 seconds)
+      // Set up periodic refresh (every 30 seconds as backup)
       refreshTimer = setInterval(refreshCodes, 30000);
     }
 
@@ -507,7 +684,7 @@ export default function Index() {
         clearInterval(timer);
       }
     };
-  }, [isLoggedIn]);
+  }, [isLoggedIn]); // Only depend on isLoggedIn for timer setup
 
   // Show login form if not logged in
   if (showLogin && !isLoggedIn) {

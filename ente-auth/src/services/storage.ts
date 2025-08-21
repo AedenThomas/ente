@@ -134,44 +134,66 @@ export class StorageService {
   }
 
   async storeAuthEntities(entities: AuthData[]): Promise<void> {
-    console.log(`DEBUG: 💾 Storing ${entities.length} auth entities`);
+    console.log(`DEBUG: 💾 Storing ${entities.length} auth entities (SIMPLIFIED)`);
     
     try {
+      // FUNDAMENTAL FIX: Always clear both storage locations first to prevent stale data
+      await LocalStorage.removeItem("authEntities");
+      await LocalStorage.removeItem("authEntities_unencrypted");
+      console.log("DEBUG: 🧹 Cleared both storage locations to prevent stale deletions");
+      
       const encrypted = await this.encryptData(JSON.stringify(entities));
       await LocalStorage.setItem("authEntities", encrypted);
-      console.log("DEBUG: ✅ Auth entities stored (encrypted)");
+      console.log("DEBUG: ✅ Auth entities stored (encrypted, single source of truth)");
+      
     } catch (error) {
       // If encryption fails (e.g., during session restoration without master key),
-      // store unencrypted since we need to cache entities for functionality
+      // store unencrypted as fallback, but still clear both locations first
       console.log("DEBUG: 🔄 Encryption failed, storing auth entities unencrypted (session restoration)");
       await LocalStorage.setItem("authEntities_unencrypted", JSON.stringify(entities));
-      console.log("DEBUG: ✅ Auth entities stored (unencrypted fallback)");
+      console.log("DEBUG: ✅ Auth entities stored (unencrypted fallback, but clean)");
     }
   }
 
   async getAuthEntities(): Promise<AuthData[]> {
+    let encryptedEntities: AuthData[] = [];
+    let unencryptedEntities: AuthData[] = [];
+    let useEncrypted = false;
+    
     // First try encrypted version
     const encryptedData = (await LocalStorage.getItem("authEntities")) as string | undefined;
     if (encryptedData) {
       try {
         const decrypted = await this.decryptData(encryptedData);
-        console.log("DEBUG: ✅ Retrieved auth entities (encrypted)");
-        return JSON.parse(decrypted);
+        encryptedEntities = JSON.parse(decrypted);
+        useEncrypted = true;
+        console.log(`DEBUG: ✅ Retrieved ${encryptedEntities.length} auth entities (encrypted)`);
       } catch (error) {
         console.log("DEBUG: ⚠️ Failed to decrypt auth entities, trying unencrypted fallback");
       }
     }
     
-    // Fallback to unencrypted version (used during session restoration)
+    // Check unencrypted version (used during session restoration)
     const unencryptedData = (await LocalStorage.getItem("authEntities_unencrypted")) as string | undefined;
     if (unencryptedData) {
       try {
-        const entities = JSON.parse(unencryptedData);
-        console.log(`DEBUG: ✅ Retrieved ${entities.length} auth entities (unencrypted fallback)`);
-        return entities;
+        unencryptedEntities = JSON.parse(unencryptedData);
+        console.log(`DEBUG: 📋 Found ${unencryptedEntities.length} auth entities (unencrypted fallback)`);
       } catch (error) {
         console.error("Failed to parse unencrypted auth entities:", error);
       }
+    }
+    
+    // DELETION FIX: Choose the most recent/complete data source
+    if (useEncrypted && encryptedEntities.length > 0) {
+      // Prefer encrypted data when available
+      if (unencryptedEntities.length > 0) {
+        console.log("DEBUG: 🔍 Both encrypted and unencrypted entities found, using encrypted (more recent)");
+      }
+      return encryptedEntities;
+    } else if (unencryptedEntities.length > 0) {
+      console.log("DEBUG: ✅ Using unencrypted fallback entities");
+      return unencryptedEntities;
     }
     
     console.log("DEBUG: ❌ No auth entities found");
@@ -409,6 +431,78 @@ export class StorageService {
     await LocalStorage.removeItem("authEntities_unencrypted");
     await LocalStorage.removeItem("decryptedAuthKey");
     console.log("DEBUG: ✅ Cleaned up unencrypted authentication context, auth entities, and decrypted auth key");
+  }
+
+  // DELETION FIX: Consistent entity update that handles both storage locations
+  async updateAuthEntitiesFromSync(
+    currentEntities: Map<string, AuthData>, 
+    entityChanges: Array<{id: string, isDeleted: boolean, entityData?: AuthData}>
+  ): Promise<AuthData[]> {
+    console.log(`DEBUG: 🔄 Processing ${entityChanges.length} entity changes for consistent storage`);
+    
+    let deletionCount = 0;
+    let updateCount = 0;
+    
+    // Apply all changes to the entity map
+    for (const change of entityChanges) {
+      if (change.isDeleted) {
+        const wasDeleted = currentEntities.delete(change.id);
+        console.log(`DEBUG: ❌ ${wasDeleted ? 'Deleted' : 'Already missing'} entity ${change.id}`);
+        if (wasDeleted) deletionCount++;
+      } else if (change.entityData) {
+        currentEntities.set(change.id, change.entityData);
+        console.log(`DEBUG: ✅ Updated entity ${change.id}`);
+        updateCount++;
+      }
+    }
+    
+    const updatedEntities = Array.from(currentEntities.values());
+    console.log(`DEBUG: 📊 Applied ${deletionCount} deletions and ${updateCount} updates. Final count: ${updatedEntities.length}`);
+    
+    // CRITICAL FIX: Force store to unencrypted during session restoration when no master key
+    const masterKey = await this.getMasterKey();
+    if (!masterKey) {
+      console.log(`DEBUG: 🔄 No master key available - forcing unencrypted storage for ${updatedEntities.length} entities`);
+      await LocalStorage.setItem("authEntities_unencrypted", JSON.stringify(updatedEntities));
+      console.log(`DEBUG: ✅ Forced unencrypted storage update with deletions applied`);
+    } else {
+      // Store with our improved storage method that cleans up stale data
+      await this.storeAuthEntities(updatedEntities);
+    }
+    
+    // DELETION FIX: Also ensure both storage locations are cleaned up for deletions
+    const deletedIds = entityChanges.filter(c => c.isDeleted).map(c => c.id);
+    if (deletedIds.length > 0) {
+      await this.ensureDeletionsInAllStorageLocations(deletedIds);
+    }
+    
+    return updatedEntities;
+  }
+
+  // DELETION FIX: Ensure deletions are reflected in all storage locations
+  private async ensureDeletionsInAllStorageLocations(deletedIds: string[]): Promise<void> {
+    console.log(`DEBUG: 🧹 Ensuring ${deletedIds.length} deletions are reflected in all storage locations`);
+    
+    // Check and clean unencrypted storage if it exists
+    const unencryptedData = (await LocalStorage.getItem("authEntities_unencrypted")) as string | undefined;
+    if (unencryptedData) {
+      try {
+        const unencryptedEntities: AuthData[] = JSON.parse(unencryptedData);
+        const originalCount = unencryptedEntities.length;
+        
+        // Remove deleted entities from unencrypted storage
+        const cleanedEntities = unencryptedEntities.filter(entity => !deletedIds.includes(entity.id));
+        
+        if (cleanedEntities.length !== originalCount) {
+          await LocalStorage.setItem("authEntities_unencrypted", JSON.stringify(cleanedEntities));
+          console.log(`DEBUG: 🧹 Cleaned ${originalCount - cleanedEntities.length} deleted entities from unencrypted storage`);
+        } else {
+          console.log("DEBUG: 🔍 No deleted entities found in unencrypted storage");
+        }
+      } catch (error) {
+        console.error("DEBUG: Failed to clean unencrypted storage:", error);
+      }
+    }
   }
 
   // [+] Debug method to reset sync state for testing
