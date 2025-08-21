@@ -1,5 +1,12 @@
 import { hash } from 'argon2-wasm';
-import sodium from 'sodium-javascript';
+// Corrected import style for CommonJS compatibility
+import * as sodium from 'sodium-javascript';
+
+// --- Crypto Constants (matching libsodium/Go implementation) ---
+const SECRETBOX_MACBYTES = 16;
+const SECRETSTREAM_ABYTES = 17;
+const SECRETBOX_NONCEBYTES = 24;
+
 
 // --- Debugging Helpers ---
 const logBuffer = (name: string, buf: Uint8Array | Buffer | undefined, showContent = false) => {
@@ -51,6 +58,7 @@ export async function deriveKeyEncryptionKey(password: string, saltB64: string, 
 
 /**
  * [Step 2] Decrypts the Master Key using the Key Encryption Key.
+ * This is a 'secretbox' operation.
  */
 export function decryptMasterKey(encryptedKeyB64: string, nonceB64: string, keyEncryptionKey: Uint8Array): Uint8Array {
   console.log("DEBUG: --- [Step 2] Starting Master Key (MK) Decryption ---");
@@ -61,7 +69,7 @@ export function decryptMasterKey(encryptedKeyB64: string, nonceB64: string, keyE
   logBuffer("MK Nonce", nonce);
   logBuffer("Using KEK for decryption", keyEncryptionKey, true);
 
-  const decryptedMessage = Buffer.alloc(ciphertext.length - sodium.crypto_secretbox_MACBYTES);
+  const decryptedMessage = Buffer.alloc(ciphertext.length - SECRETBOX_MACBYTES);
 
   if (!sodium.crypto_secretbox_open_easy(decryptedMessage, ciphertext, nonce, keyEncryptionKey)) {
     throw new Error('Failed to decrypt master key. This usually means the password is incorrect.');
@@ -74,6 +82,7 @@ export function decryptMasterKey(encryptedKeyB64: string, nonceB64: string, keyE
 
 /**
  * [Step 3] Decrypts the Secret Key using the Master Key.
+ * This is also a 'secretbox' operation.
  */
 export function decryptSecretKey(encryptedSecretKeyB64: string, nonceB64: string, masterKey: Uint8Array): Uint8Array {
     console.log("DEBUG: --- [Step 3] Starting Secret Key (SK) Decryption ---");
@@ -84,7 +93,7 @@ export function decryptSecretKey(encryptedSecretKeyB64: string, nonceB64: string
     logBuffer("SK Nonce", nonce);
     logBuffer("Using MK for decryption", masterKey, true);
     
-    const decryptedMessage = Buffer.alloc(ciphertext.length - sodium.crypto_secretbox_MACBYTES);
+    const decryptedMessage = Buffer.alloc(ciphertext.length - SECRETBOX_MACBYTES);
 
     if (!sodium.crypto_secretbox_open_easy(decryptedMessage, ciphertext, nonce, masterKey)) {
         throw new Error('Failed to decrypt secret key.');
@@ -97,26 +106,35 @@ export function decryptSecretKey(encryptedSecretKeyB64: string, nonceB64: string
 
 
 /**
- * [Step 4] Decrypts the session token using the Secret Key.
- * The encryptedToken is a self-contained payload: [24-byte nonce][ciphertext+MAC]
+ * [Step 4] Decrypts the session token using the SECRET KEY.
+ * This is a 'secretstream' operation where the nonce is provided separately.
  */
-export function decryptSessionToken(encryptedTokenB64: string, keyEncryptionKey: Uint8Array): string {
+export function decryptSessionToken(encryptedTokenB64: string, nonceB64: string, secretKey: Uint8Array): string {
   console.log("DEBUG: --- [Step 4] Starting Session Token Decryption ---");
-  const combined = base64ToBuf(encryptedTokenB64);
   
-  const nonce = combined.slice(0, sodium.crypto_secretbox_NONCEBYTES);
-  const ciphertext = combined.slice(sodium.crypto_secretbox_NONCEBYTES);
-  
-  logBuffer("Full Encrypted Token Payload", combined);
-  logBuffer("Token Nonce (extracted from payload)", nonce);
-  logBuffer("Token Ciphertext (extracted from payload)", ciphertext);
-  // Corrected log message to reflect the key being used
-  logBuffer("Using KEK for decryption", keyEncryptionKey, true);
+  const ciphertext = base64ToBuf(encryptedTokenB64);
+  const header = base64ToBuf(nonceB64); // The nonce is the header for the stream
 
-  const decrypted = Buffer.alloc(ciphertext.length - sodium.crypto_secretbox_MACBYTES);
-  if (!sodium.crypto_secretbox_open_easy(decrypted, ciphertext, nonce, keyEncryptionKey)) {
-      throw new Error('Failed to decrypt session token.');
+  logBuffer("Token Ciphertext (from API)", ciphertext);
+  logBuffer("Token Header (from keyAttributes)", header);
+  logBuffer("Using SK for decryption", secretKey, true);
+  
+  const state = Buffer.alloc(sodium.crypto_secretstream_xchacha20poly1305_STATEBYTES);
+  console.log("DEBUG: [Step 4.1] Initializing pull stream...");
+  sodium.crypto_secretstream_xchacha20poly1305_init_pull(state, header, secretKey);
+  console.log("DEBUG: [Step 4.2] Pull stream initialized.");
+
+  const decrypted = Buffer.alloc(ciphertext.length - SECRETSTREAM_ABYTES);
+  const tag = Buffer.alloc(1);
+
+  console.log("DEBUG: [Step 4.3] Pulling from stream...");
+  const success = sodium.crypto_secretstream_xchacha20poly1305_pull(state, decrypted, tag, ciphertext, null);
+
+  if (!success) {
+      console.error("DEBUG: [Step 4.4] Stream pull FAILED.");
+      throw new Error('Failed to decrypt session token. MAC could not be verified.');
   }
+  console.log("DEBUG: [Step 4.4] Stream pull SUCCEEDED.");
 
   const token = decrypted.toString('utf-8');
   console.log("DEBUG: SUCCESS! Decrypted Session Token:", token);
@@ -124,22 +142,17 @@ export function decryptSessionToken(encryptedTokenB64: string, keyEncryptionKey:
   return token;
 }
 
-
-
-// --- AUTHENTICATOR DATA CRYPTOGRAPHY (Restored Functions) ---
-
-/**
- * Decrypts the authenticator key using the master key.
- */
+// --- AUTHENTICATOR DATA CRYPTOGRAPHY ---
+// ... (rest of the file is correct and remains unchanged) ...
 export function decryptAuthKey(encryptedKeyB64: string, headerB64: string, masterKey: Uint8Array): Uint8Array {
   console.log("DEBUG: --- Starting Auth Key Decryption (decryptAuthKey) ---");
   const ciphertext = base64ToBuf(encryptedKeyB64);
-  const nonce = base64ToBuf(headerB64); // 'header' from the API is the nonce
+  const nonce = base64ToBuf(headerB64);
   logBuffer("Encrypted Auth Key Ciphertext", ciphertext);
   logBuffer("Auth Key Nonce", nonce);
-  logBuffer("Using Master Key", masterKey);
+  logBuffer("Using Master Key", masterKey, true);
 
-  const decryptedMessage = Buffer.alloc(ciphertext.length - sodium.crypto_secretbox_MACBYTES);
+  const decryptedMessage = Buffer.alloc(ciphertext.length - SECRETBOX_MACBYTES);
   
   if (!sodium.crypto_secretbox_open_easy(decryptedMessage, ciphertext, nonce, masterKey)) {
     throw new Error('Failed to decrypt authenticator key.');
@@ -150,9 +163,6 @@ export function decryptAuthKey(encryptedKeyB64: string, headerB64: string, maste
   return decryptedMessage;
 }
 
-/**
- * Decrypts an authenticator entity's data using the authenticator key.
- */
 export function decryptAuthEntity(encryptedDataB64: string, headerB64: string, authenticatorKey: Uint8Array): string {
   const state = Buffer.alloc(sodium.crypto_secretstream_xchacha20poly1305_STATEBYTES);
   const header = base64ToBuf(headerB64);
@@ -160,7 +170,7 @@ export function decryptAuthEntity(encryptedDataB64: string, headerB64: string, a
   sodium.crypto_secretstream_xchacha20poly1305_init_pull(state, header, authenticatorKey);
 
   const ciphertext = base64ToBuf(encryptedDataB64);
-  const decrypted = Buffer.alloc(ciphertext.length - sodium.crypto_secretstream_xchacha20poly1305_ABYTES);
+  const decrypted = Buffer.alloc(ciphertext.length - SECRETSTREAM_ABYTES);
   const tag = Buffer.alloc(1);
 
   if (!sodium.crypto_secretstream_xchacha20poly1305_pull(state, decrypted, tag, ciphertext, null)) {
@@ -170,15 +180,12 @@ export function decryptAuthEntity(encryptedDataB64: string, headerB64: string, a
   return decrypted.toString('utf-8');
 }
 
-/**
- * Encrypts the authenticator key with the master key for creation.
- */
 export function encryptAuthKey(authenticatorKey: Uint8Array, masterKey: Uint8Array): { encryptedKeyB64: string; headerB64: string } {
     console.log("DEBUG: --- Starting Auth Key Encryption (encryptAuthKey) ---");
-    const nonce = Buffer.alloc(sodium.crypto_secretbox_NONCEBYTES);
+    const nonce = Buffer.alloc(SECRETBOX_NONCEBYTES);
     sodium.randombytes_buf(nonce);
 
-    const ciphertext = Buffer.alloc(authenticatorKey.length + sodium.crypto_secretbox_MACBYTES);
+    const ciphertext = Buffer.alloc(authenticatorKey.length + SECRETBOX_MACBYTES);
     sodium.crypto_secretbox_easy(ciphertext, authenticatorKey, nonce, masterKey);
     
     logBuffer("Generated Nonce (Header)", nonce);
@@ -191,9 +198,6 @@ export function encryptAuthKey(authenticatorKey: Uint8Array, masterKey: Uint8Arr
     };
 }
 
-/**
- * Generates a new random key for the authenticator.
- */
 export function generateAuthenticatorKey(): Uint8Array {
     const key = Buffer.alloc(sodium.crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
     sodium.randombytes_buf(key);
@@ -201,5 +205,4 @@ export function generateAuthenticatorKey(): Uint8Array {
     return key;
 }
 
-// Re-export crypto helpers
 export { base64ToBuf, bufToBase64 };

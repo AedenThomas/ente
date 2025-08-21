@@ -72,8 +72,12 @@ export default function Login() {
             masterKey
         );
 
-        // [Step 4] Decrypt the Session Token using the SK
-        const token = decryptSessionToken(response.encryptedToken, secretKey);
+        // [Step 4] Decrypt the Session Token using the SECRET KEY (SK) and the SECRET KEY'S NONCE
+        const token = decryptSessionToken(
+            response.encryptedToken,
+            response.keyAttributes.secretKeyDecryptionNonce,
+            secretKey
+        );
 
         if (!token) {
             throw new Error("Decrypted token is empty. Final decryption failed.");
