@@ -2,11 +2,11 @@ import { Action, ActionPanel, Form, showToast, Toast, useNavigation } from "@ray
 import { useState } from "react";
 import { getApiClient } from "./services/api";
 import { getStorageService } from "./services/storage";
-import { 
-  deriveKeyEncryptionKey, 
-  decryptMasterKey, 
-  decryptSecretKey, 
-  decryptSessionToken 
+import {
+  deriveKeyEncryptionKey,
+  decryptMasterKey,
+  decryptSecretKey,
+  decryptSessionToken,
 } from "./services/crypto";
 import { AuthorizationResponse, UserCredentials } from "./types";
 import Index from "./index";
@@ -17,22 +17,18 @@ export default function Login() {
   const [error, setError] = useState<string | undefined>();
   const [otpRequested, setOtpRequested] = useState(false);
 
-  const handleSubmit = async (values: { 
-    email: string; 
-    password?: string;
-    otp?: string;
-  }) => {
+  const handleSubmit = async (values: { email: string; password?: string; otp?: string }) => {
     if (!values.email) {
       setError("Email is required");
       return;
     }
-    
+
     setIsLoading(true);
     setError(undefined);
-    
+
     try {
       const apiClient = await getApiClient();
-      
+
       if (!otpRequested) {
         const toast = await showToast({ style: Toast.Style.Animated, title: "Requesting code..." });
         await apiClient.requestEmailOTP(values.email);
@@ -41,46 +37,47 @@ export default function Login() {
         toast.title = "Verification code sent";
       } else {
         if (!values.otp || !values.password) {
-            setError("Password and verification code are required");
-            setIsLoading(false);
-            return;
+          setError("Password and verification code are required");
+          setIsLoading(false);
+          return;
         }
 
         const toast = await showToast({ style: Toast.Style.Animated, title: "Verifying and decrypting..." });
+        // The API call should NOT include the password for this flow.
         const response: AuthorizationResponse = await apiClient.verifyEmailOTP(values.email, values.otp);
         console.log("DEBUG: Received authorization response from API.");
 
         // [Step 1] Derive the KEK from the password
         const keyEncryptionKey = await deriveKeyEncryptionKey(
-            values.password,
-            response.keyAttributes.kekSalt,
-            response.keyAttributes.memLimit,
-            response.keyAttributes.opsLimit
-        );
-        
-        // [Step 2] Decrypt the Master Key (MK) using the KEK
-        const masterKey = decryptMasterKey(
-            response.keyAttributes.encryptedKey,
-            response.keyAttributes.keyDecryptionNonce,
-            keyEncryptionKey
-        );
-        
-        // [Step 3] Decrypt the Secret Key (SK) using the MK
-        const secretKey = decryptSecretKey(
-            response.keyAttributes.encryptedSecretKey,
-            response.keyAttributes.secretKeyDecryptionNonce,
-            masterKey
+          values.password,
+          response.keyAttributes.kekSalt,
+          response.keyAttributes.memLimit,
+          response.keyAttributes.opsLimit,
         );
 
-        // [Step 4] Decrypt the Session Token using the SECRET KEY (SK) and the SECRET KEY'S NONCE
+        // [Step 2] Decrypt the Master Key (MK) using the KEK
+        const masterKey = decryptMasterKey(
+          response.keyAttributes.encryptedKey,
+          response.keyAttributes.keyDecryptionNonce,
+          keyEncryptionKey,
+        );
+
+        // [Step 3] Decrypt the Secret Key (SK) using the MK
+        const secretKey = decryptSecretKey(
+          response.keyAttributes.encryptedSecretKey,
+          response.keyAttributes.secretKeyDecryptionNonce,
+          masterKey,
+        );
+        
+        // [Step 4] Decrypt the Session Token using secretstream with the MASTER KEY (MK)
         const token = decryptSessionToken(
-            response.encryptedToken,
-            response.keyAttributes.secretKeyDecryptionNonce,
-            secretKey
+          response.encryptedToken,
+          response.keyAttributes.secretKeyDecryptionNonce,
+          masterKey, // <-- The key must be the Master Key
         );
 
         if (!token) {
-            throw new Error("Decrypted token is empty. Final decryption failed.");
+          throw new Error("Decrypted token is empty. Final decryption failed.");
         }
 
         const storage = getStorageService();
@@ -88,16 +85,19 @@ export default function Login() {
           email: values.email,
           token: token,
           masterKey: masterKey,
-          keyAttributes: response.keyAttributes
+          keyAttributes: response.keyAttributes,
         };
-
+        
         storage.setMasterKey(masterKey);
         await storage.storeCredentials(credentials);
+        
+        // Update the API client instance with the new token
+        apiClient.setToken(token);
         console.log("DEBUG: Login successful. Credentials stored securely.");
 
         toast.style = Toast.Style.Success;
         toast.title = "Login successful!";
-        
+
         push(<Index />);
       }
     } catch (error) {
@@ -113,7 +113,7 @@ export default function Login() {
       setIsLoading(false);
     }
   };
-  
+
   return (
     <Form
       actions={
@@ -132,19 +132,17 @@ export default function Login() {
       />
       {otpRequested && (
         <>
-            <Form.PasswordField
-                id="password"
-                title="Password"
-                placeholder="Enter your Ente password"
-            />
-            <Form.TextField
-                id="otp"
-                title="Verification Code"
-                placeholder="Enter code from email"
-            />
+          <Form.PasswordField id="password" title="Password" placeholder="Enter your Ente password" />
+          <Form.TextField id="otp" title="Verification Code" placeholder="Enter code from email" />
         </>
       )}
-      <Form.Description text={otpRequested ? "Enter your password and the verification code sent to your email." : "We'll send a verification code to your email to log in."} />
+      <Form.Description
+        text={
+          otpRequested
+            ? "Enter your password and the verification code sent to your email."
+            : "We'll send a verification code to your email to log in."
+        }
+      />
     </Form>
   );
 }

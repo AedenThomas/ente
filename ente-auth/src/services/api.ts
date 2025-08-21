@@ -1,6 +1,6 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
-import { LocalStorage, showToast, Toast } from '@raycast/api';
 import { AuthorizationResponse, AuthKey, AuthEntity } from '../types';
+import { getStorageService } from './storage';
 
 const API_BASE_URL = 'https://api.ente.io';
 
@@ -12,6 +12,7 @@ export class EnteApiClient {
       baseURL: API_BASE_URL,
       headers: {
         'Content-Type': 'application/json',
+        'X-Client-Package': 'io.ente.auth',
         ...(token && { 'X-Auth-Token': token }),
       },
     });
@@ -28,7 +29,7 @@ export class EnteApiClient {
         if (error.response) {
           switch (error.response.status) {
             case 401:
-              error.message = "Authentication failed. Your session may have expired.";
+              error.message = "Authentication failed. Your session may have expired or credentials may be incorrect.";
               break;
             case 404:
               error.message = "The requested resource was not found.";
@@ -40,7 +41,7 @@ export class EnteApiClient {
           error.message = "Network error. Please check your connection.";
         }
         return Promise.reject(error);
-      }
+      },
     );
   }
 
@@ -63,7 +64,6 @@ export class EnteApiClient {
       return response.data;
     } catch (error) {
        if ((error as AxiosError).response?.status === 404) {
-        // This is expected if the user has no codes yet. We will create a key later.
         throw new Error('AuthenticatorKeyNotFound');
       }
       throw error;
@@ -83,7 +83,19 @@ export class EnteApiClient {
   }
 }
 
+let apiClientInstance: EnteApiClient | null = null;
 export const getApiClient = async (): Promise<EnteApiClient> => {
-  const token = await LocalStorage.getItem('token') as string | undefined;
-  return new EnteApiClient(token);
+    if (apiClientInstance) {
+        // Ensure the token is up-to-date on subsequent calls after login
+        const storage = getStorageService();
+        const creds = await storage.getCredentials();
+        if (creds?.token) {
+            apiClientInstance.setToken(creds.token);
+        }
+        return apiClientInstance;
+    }
+    const storage = getStorageService();
+    const creds = await storage.getCredentials();
+    apiClientInstance = new EnteApiClient(creds?.token);
+    return apiClientInstance;
 };

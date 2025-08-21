@@ -35,11 +35,10 @@ export interface AuthCode extends AuthData {
 export interface UserCredentials {
   email: string;
   token: string;
-  masterKey: Uint8Array;
+  masterKey: Buffer;
   keyAttributes: KeyAttributes;
 }
 
-// This interface now matches the Go struct perfectly.
 export interface KeyAttributes {
   kekSalt: string;
   encryptedKey: string;
@@ -53,5 +52,7 @@ export interface KeyAttributes {
 export interface AuthorizationResponse {
   id: number;
   encryptedToken: string;
+  token?: string;
+  twoFactorSessionID?: string; // Add this field
   keyAttributes: KeyAttributes;
 }
