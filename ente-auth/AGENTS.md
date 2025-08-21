@@ -239,6 +239,54 @@
 
 **Extension now provides complete feature parity with official web implementation!**
 
+## 2025-08-21 - Performance Optimization & Debug Logging Fix ✅
+
+**Problem**: Extension was generating excessive debug logging every second, causing poor performance and console spam. The 1-second timer was calling expensive `authenticatorService.getAuthCodes()` operations that triggered decryption attempts and session restoration checks continuously.
+
+**Root Cause Analysis**:
+- **Expensive 1-Second Timer**: `useEffect` timer called `getAuthCodes()` every second
+- **Repeated Decryption**: Every call triggered master key checks and decryption fallbacks 
+- **Session Restoration Spam**: Multiple session restoration attempts during startup
+- **Over-Aggressive Refresh**: TOTP codes refresh every 30s but timer updated every 1s unnecessarily
+
+**Successful Optimization Strategy**:
+- **Smart Timer Split**: Separated lightweight countdown updates from expensive code refreshes
+- **Local Countdown Calculation**: Progress/remaining time calculated locally without API calls
+- **Periodic Code Refresh**: Only fetch fresh codes every 30 seconds when they actually expire
+- **Reduced Debug Logging**: Minimized debug output to essential information only
+- **Single Session Restoration**: Ensured session restoration runs once on startup
+
+**Implementation Details**:
+- **Countdown Timer (1s)**: Lightweight local calculation of `remainingSeconds` and `progress` from current time
+- **Refresh Timer (30s)**: Expensive `getAuthCodes()` operation only when codes expire
+- **Optimized Session Check**: Removed excessive debug logging from session restoration
+- **Clean Timer Management**: Proper cleanup of multiple timers to prevent memory leaks
+
+**Performance Results**:
+- **Debug Spam Eliminated**: No more repetitive logging every second
+- **CPU Usage Reduced**: Expensive operations only run when needed (every 30s vs every 1s)
+- **Same User Experience**: Live countdown and fresh codes maintained
+- **Memory Efficiency**: Proper timer cleanup prevents memory leaks
+
+**RESULT**: ✅ **PERFORMANCE COMPLETELY OPTIMIZED!**
+- Debug logging reduced to essential messages only
+- 97% reduction in expensive operations (30s vs 1s intervals)
+- Same responsive UI with live countdown and progress indicators
+- Clean, professional development experience
+
+**FINAL STATUS**: ✅ **ALL OPTIMIZATIONS COMPLETE!**
+- ✅ SRP Authentication: **WORKING**
+- ✅ Token Authorization: **WORKING** 
+- ✅ Data Retrieval: **WORKING**
+- ✅ Sync Logic: **WORKING**
+- ✅ URI Parsing: **WORKING**
+- ✅ OTP Code Display: **WORKING**
+- ✅ Session Persistence: **WORKING**
+- ✅ UI/UX Matching Official Web App: **WORKING**
+- ✅ **Performance Optimization: WORKING** 🚀
+
+**Extension now runs efficiently with minimal resource usage while maintaining full functionality!**
+
 # Tech Stack
 
 ## Frontend (Raycast Extension)
