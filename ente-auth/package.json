@@ -9,33 +9,25 @@
   "commands": [
     {
       "name": "index",
-      "title": "View Auth Codes",
-      "description": "View and manage your two-factor authentication codes",
-      "mode": "view"
-    },
-    {
-      "name": "login",
-      "title": "Login to Ente",
-      "description": "Login to your Ente account",
-      "mode": "view"
-    },
-    {
-      "name": "add-code",
-      "title": "Add Auth Code",
-      "description": "Add a new authentication code",
+      "title": "Ente Auth",
+      "description": "Access your two-factor authentication codes from Ente",
       "mode": "view"
     }
   ],
   "dependencies": {
     "@raycast/api": "^1.102.5",
     "@raycast/utils": "^1.17.0",
+    "@simplewebauthn/server": "^13.1.2",
     "argon2-wasm": "^0.9.0",
     "axios": "^1.4.0",
     "base32-decode": "^1.0.0",
     "base32-encode": "^2.0.0",
     "crypto-js": "^4.2.0",
+    "jsrp": "^0.2.4",
     "node-forge": "^1.3.1",
-    "sodium-javascript": "^0.8.0"
+    "fast-srp-hap": "^2.0.4",
+    "uuid": "^11.1.0",
+    "libsodium-wrappers-sumo": "^0.7.15"
   },
   "devDependencies": {
     "@raycast/eslint-config": "^2.0.4",

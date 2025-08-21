@@ -1,3 +1,4 @@
+// src/types.ts
 export interface AuthKey {
   userID: number;
   encryptedKey: string;
@@ -34,8 +35,9 @@ export interface AuthCode extends AuthData {
 
 export interface UserCredentials {
   email: string;
+  userId: number; // [+] Add user ID from login response
   token: string;
-  masterKey: Buffer;
+  masterKey: Buffer; // [+] Changed from Uint8Array to Buffer for consistency with Node.js crypto
   keyAttributes: KeyAttributes;
 }
 
@@ -43,6 +45,7 @@ export interface KeyAttributes {
   kekSalt: string;
   encryptedKey: string;
   keyDecryptionNonce: string;
+  publicKey: string;
   encryptedSecretKey: string;
   secretKeyDecryptionNonce: string;
   memLimit: number;
@@ -53,6 +56,46 @@ export interface AuthorizationResponse {
   id: number;
   encryptedToken: string;
   token?: string;
-  twoFactorSessionID?: string; // Add this field
+  twoFactorSessionID?: string;
   keyAttributes: KeyAttributes;
+}
+
+export interface ApiClientConfig {
+  token?: string;
+  clientPackage: string;
+  userId?: number;
+  accountKey?: string;
+}
+
+export interface AuthenticationContext {
+  userId: number;
+  accountKey: string;
+  userAgent: string;
+}
+
+export interface AuthenticatedHeaders {
+  'Content-Type': string;
+  'X-Auth-Token': string;
+  'X-Client-Package': string;
+  'User-Agent'?: string;
+  'X-Request-Id'?: string;
+}
+
+// SRP Authentication Types
+export interface SRPAttributes {
+  srpUserID: string;
+  srpSalt: string;
+  memLimit: number;
+  opsLimit: number;
+  kekSalt: string;
+  isEmailMFAEnabled: boolean;
+}
+
+export interface CreateSRPSessionResponse {
+  sessionID: string;
+  srpB: string;
+}
+
+export interface SRPVerificationResponse extends AuthorizationResponse {
+  srpM2: string;
 }

@@ -1,466 +1,326 @@
+import { SRP, SrpClient } from "fast-srp-hap";
+import { v4 as uuidv4 } from "uuid";
+import { getApiClient, getUnauthenticatedApiClient } from "./api";
+import { deriveKeyEncryptionKey, deriveLoginKey, bufToBase64 } from "./crypto";
+
 /**
- * SRP (Secure Remote Password) authentication implementation for Ente.
- * Based on the web implementation but simplified for the Raycast extension.
+ * The SRP attributes for a user.
  */
-
-import CryptoJS from 'crypto-js';
-
-// Encapsulating in an srp object for easier import/export
-export const srp = {
+export interface SRPAttributes {
   /**
-   * Helper functions to encode/decode base64
+   * The SRP user ID for the (Ente) user.
    */
-  toBase64: (buffer: ArrayBuffer): string => {
-    return CryptoJS.enc.Base64.stringify(CryptoJS.lib.WordArray.create(buffer));
-  },
-
-  fromBase64: (base64: string): ArrayBuffer => {
-    const wordArray = CryptoJS.enc.Base64.parse(base64);
-    const buffer = new Uint8Array(wordArray.sigBytes);
-    const words = wordArray.words;
-    for (let i = 0; i < wordArray.sigBytes; i++) {
-      buffer[i] = (words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
-    }
-    return buffer;
-  },
-
+  srpUserID: string;
   /**
-   * Generate a random salt for SRP
+   * The SRP salt.
    */
-  generateSalt: (): string => {
-    const salt = CryptoJS.lib.WordArray.random(16); // 16 bytes (128 bits)
-    return CryptoJS.enc.Base64.stringify(salt);
-  },
-
+  srpSalt: string;
   /**
-   * Derive a key from a password using PBKDF2
+   * KEK salt - same as in KeyAttributes
    */
-  deriveKey: (
-    password: string,
-    salt: string,
-    iterations = 100000,
-    keyLen = 32
-  ): string => {
-    const key = CryptoJS.PBKDF2(password, salt, {
-      keySize: keyLen / 4,
-      iterations,
+  kekSalt: string;
+  /**
+   * Memory limit for key derivation
+   */
+  memLimit: number;
+  /**
+   * Operations limit for key derivation
+   */
+  opsLimit: number;
+  /**
+   * If true, then the client should use email verification instead of SRP.
+   */
+  isEmailMFAEnabled: boolean;
+}
+
+/**
+ * A local-only structure holding information required for SRP setup.
+ */
+export interface SRPSetupAttributes {
+  srpUserID: string;
+  srpSalt: string;
+  srpVerifier: string;
+  loginSubKey: string;
+}
+
+/**
+ * SRP session creation response
+ */
+export interface CreateSRPSessionResponse {
+  sessionID: string;
+  srpB: string;
+}
+
+/**
+ * SRP verification response - matches server's EmailAuthorizationResponse + srpM2
+ */
+export interface SRPVerificationResponse {
+  id: number;
+  keyAttributes?: any;
+  encryptedToken?: string;
+  token?: string;
+  twoFactorSessionID?: string;
+  twoFactorSessionIDV2?: string;
+  passkeySessionID?: string;
+  accountsUrl?: string;
+  srpM2: string;
+}
+
+/**
+ * Fetch the SRP attributes from remote for the Ente user with the provided email.
+ * Exactly matches web implementation getSRPAttributes function.
+ */
+export const getSRPAttributes = async (email: string): Promise<SRPAttributes | undefined> => {
+  try {
+    console.log("DEBUG: Getting SRP attributes for email:", email);
+    const apiClient = getUnauthenticatedApiClient(); // Use unauthenticated client for SRP
+    const attributes = await apiClient.getSRPAttributes(email);
+    console.log("DEBUG: SRP attributes received:", {
+      srpUserID: attributes.srpUserID,
+      isEmailMFAEnabled: attributes.isEmailMFAEnabled
     });
-    return CryptoJS.enc.Base64.stringify(key);
-  },
-
-  /**
-   * Derive a login subkey for use as SRP password
-   */
-  deriveSRPLoginSubKey: (kek: string): string => {
-    // Derive a subkey using a different context
-    const key = CryptoJS.HmacSHA256(kek, 'loginctx');
-    // Use the first 16 bytes as the SRP password
-    const firstHalf = CryptoJS.lib.WordArray.create(
-      key.words.slice(0, key.words.length / 2),
-      16
-    );
-    return CryptoJS.enc.Base64.stringify(firstHalf);
-  },
-
-  /**
-   * Check if email verification is required or if SRP can be used directly
-   * @param email User email
-   * @returns true if email verification is required, false if SRP can be used
-   */
-  checkEmailVerificationRequired: async (email: string): Promise<boolean> => {
-    try {
-      // Based on CLI implementation, Ente appears to use email verification by default
-      return true;
-    } catch (error) {
-      console.error('Error checking email verification:', error);
-      return true;
+    return attributes;
+  } catch (error: any) {
+    if (error.status === 404) {
+      console.log("DEBUG: No SRP attributes found for user (404)");
+      return undefined;
     }
-  },
-
-  /**
-   * Request a one-time token for email verification
-   * @param email User email
-   * @returns Promise indicating if the request was successful
-   */
-  requestEmailVerification: async (email: string): Promise<boolean> => {
-    try {
-      console.log(`Requesting email verification for ${email}`);
-      // Use the exact same endpoint from the CLI code
-      const axios = require('axios');
-      const domains = ['api.ente.io', 'photos.ente.io', 'auth.ente.io'];
-      
-      // This matches the CLI implementation in SendLoginOTP
-      const payload = {
-        email: email,
-        purpose: 'login'
-      };
-      
-      let success = false;
-      for (const domain of domains) {
-        try {
-          const url = `https://${domain}/users/ott`;
-          await axios.post(url, payload);
-          console.log(`Successfully requested OTP using endpoint: ${url}`);
-          success = true;
-          break;
-        } catch (err) {
-          console.log(`Failed to request OTP with domain ${domain}:`, err.message);
-        }
-      }
-      
-      if (!success) {
-        console.log('All OTP request endpoints failed, using mock mode');
-      }
-      
-      // Always return true to continue the flow with mock data if needed
-      return true;
-    } catch (error) {
-      console.error('Error requesting email verification:', error);
-      // Fallback to mock mode if the real API call fails
-      return true; // Return success even on failure for demo purposes
-    }
-  },
-
-  /**
-   * Verify an email one-time token
-   * @param email User email
-   * @param token One-time token received via email
-   * @returns Authentication token if successful
-   */
-  verifyEmailToken: async (email: string, token: string): Promise<string | null> => {
-    try {
-      console.log(`Verifying email token for ${email}`);
-      // Use the exact same endpoint from the CLI code
-      const axios = require('axios');
-      const domains = ['api.ente.io', 'photos.ente.io', 'auth.ente.io'];
-      
-      // This matches the CLI implementation in VerifyEmail
-      const payload = {
-        email: email,
-        ott: token  // CLI uses 'ott' not 'otp'
-      };
-      
-      let authToken = null;
-      for (const domain of domains) {
-        try {
-          const url = `https://${domain}/users/verify-email`;
-          const response = await axios.post(url, payload);
-          console.log(`Successfully verified email using endpoint: ${url}`);
-          authToken = response.data.token || 'simulated-auth-token';
-          break;
-        } catch (err) {
-          console.log(`Failed to verify email with domain ${domain}:`, err.message);
-        }
-      }
-      
-      if (!authToken) {
-        console.log('All email verification endpoints failed, using mock mode');
-        return 'simulated-auth-token';
-      }
-      
-      return authToken;
-    } catch (error) {
-      console.error('Error verifying email token:', error);
-      // Fallback to mock mode if the real API call fails
-      return 'simulated-auth-token';
-    }
-  },
-
-  /**
-   * Initialize SRP authentication (first step)
-   * @param email User email
-   * @param password User password
-   * @returns SRP session data if successful
-   */
-  initializeSRP: async (
-    email: string,
-    password: string
-  ): Promise<{ sessionId: string; srpB: string } | null> => {
-    try {
-      // In a real implementation, this would:
-      // 1. Get the user's SRP attributes from the server
-      // 2. Generate a client key and compute A
-      // 3. Send A to the server and receive B
-      // For now, we just simulate success
-      console.log(`Initializing SRP for ${email}`);
-      return {
-        sessionId: 'simulated-session-id',
-        srpB: 'simulated-srp-b',
-      };
-    } catch (error) {
-      console.error('Error initializing SRP:', error);
-      return null;
-    }
-  },
-
-  /**
-   * Complete SRP authentication (second step)
-   * @param email User email
-   * @param sessionId SRP session ID
-   * @param srpM1 SRP M1 (client evidence message)
-   * @returns Authentication token if successful
-   */
-  completeSRP: async (
-    email: string,
-    sessionId: string,
-    srpM1: string
-  ): Promise<string | null> => {
-    try {
-      // In a real implementation, this would:
-      // 1. Send M1 to the server
-      // 2. Verify M2 from the server
-      // 3. Receive the authentication token
-      // For now, we just simulate success
-      console.log(`Completing SRP for ${email} with session ${sessionId}`);
-      return 'simulated-auth-token';
-    } catch (error) {
-      console.error('Error completing SRP:', error);
-      return null;
-    }
-  },
-
-  /**
-   * A simplified SRP authentication flow
-   * @param email User email
-   * @param password User password
-   * @returns Authentication token if successful
-   */
-  authenticateWithSRP: async (
-    email: string,
-    password: string
-  ): Promise<string | null> => {
-    try {
-      // Check if email verification is required
-      const emailVerificationRequired = await srp.checkEmailVerificationRequired(email);
-      
-      if (emailVerificationRequired) {
-        console.log('Email verification is required');
-        // Request email verification - this will send an OTP to the user's email
-        const otpSent = await srp.requestEmailVerification(email);
-        
-        if (!otpSent) {
-          throw new Error('Failed to send verification email');
-        }
-        
-        // At this point in a real implementation, we would:
-        // 1. Show a prompt for the user to enter the OTP they received
-        // 2. Call verifyEmailToken with the user's email and entered OTP
-        // However, since we can't display a prompt in the current flow, we'll use a mock OTP for demo purposes
-        
-        // In a real implementation, this would be entered by the user
-        const mockOTP = '123456';
-        
-        // Verify the OTP
-        const token = await srp.verifyEmailToken(email, mockOTP);
-        
-        if (!token) {
-          throw new Error('Email verification failed');
-        }
-        
-        return token;
-      } else {
-        console.log('Using SRP authentication');
-        // Initialize SRP
-        const srpSession = await srp.initializeSRP(email, password);
-        
-        if (!srpSession) {
-          console.error('Failed to initialize SRP session');
-          return null;
-        }
-        
-        // Complete SRP
-        const token = await srp.completeSRP(email, srpSession.sessionId, 'simulated-srp-m1');
-        return token;
-      }
-    } catch (error) {
-      console.error('Authentication error:', error);
-      // Return a mock token for demo purposes
-      return 'simulated-auth-token-via-email';
-    }
-  }
-};
-
-// Export individual functions for backward compatibility
-export const toBase64 = srp.toBase64;
-export const fromBase64 = srp.fromBase64;
-export const generateSalt = srp.generateSalt;
-export const deriveKey = srp.deriveKey;
-export const deriveSRPLoginSubKey = srp.deriveSRPLoginSubKey;
-
-/**
- * Check if email verification is required or if SRP can be used directly
- * @param email User email
- * @returns true if email verification is required, false if SRP can be used
- */
-export const checkEmailVerificationRequired = async (email: string): Promise<boolean> => {
-  try {
-    // Based on CLI implementation, Ente appears to use email verification by default
-    return true;
-  } catch (error) {
-    console.error('Error checking email verification:', error);
-    return true;
+    throw error;
   }
 };
 
 /**
- * Request a one-time token for email verification
- * @param email User email
- * @returns Promise indicating if the request was successful
+ * Determine authentication method based on SRP attributes and MFA status.
+ * Matches web implementation logic in LoginContents.tsx.
  */
-export const requestEmailVerification = async (email: string): Promise<boolean> => {
-  try {
-    console.log(`Requesting email verification for ${email}`);
-    // Make an API call to request OTP
-    // Based on CLI implementation in validateEmail function
-    const axios = require('axios');
-    const API_BASE_URL = 'https://api.ente.io';
-    
-    await axios.post(`${API_BASE_URL}/auth/otp`, { email });
-    
-    return true;
-  } catch (error) {
-    console.error('Error requesting email verification:', error);
-    // Fallback to mock mode if the real API call fails
-    return true; // Return success even on failure for demo purposes
+export const determineAuthMethod = async (email: string): Promise<"srp" | "email"> => {
+  const srpAttributes = await getSRPAttributes(email);
+  
+  if (!srpAttributes) {
+    console.log("[SRP] No SRP attributes found, using email authentication");
+    return "email";
   }
+  
+  if (srpAttributes.isEmailMFAEnabled) {
+    console.log("[SRP] Email MFA enabled, using email authentication");
+    return "email";
+  }
+  
+  console.log("[SRP] Using SRP authentication");
+  return "srp";
 };
 
 /**
- * Verify an email one-time token
- * @param email User email
- * @param token One-time token received via email
- * @returns Authentication token if successful
+ * Generate SRP setup attributes from the provided KEK.
+ * Matches web implementation generateSRPSetupAttributes function.
  */
-export const verifyEmailToken = async (email: string, token: string): Promise<string | null> => {
-  try {
-    console.log(`Verifying email token for ${email}`);
-    // Make an API call to verify the OTP
-    // Based on CLI implementation in validateEmail function
-    const axios = require('axios');
-    const API_BASE_URL = 'https://api.ente.io';
-    
-    const response = await axios.post(`${API_BASE_URL}/auth/verify`, { 
-      email, 
-      otp: token 
+export const generateSRPSetupAttributes = async (kek: string): Promise<SRPSetupAttributes> => {
+  const loginSubKey = await deriveSRPLoginSubKey(kek);
+  
+  // Museum schema requires this to be a UUID.
+  const srpUserID = uuidv4();
+  const srpSalt = await generateDeriveKeySalt();
+  
+  const srpVerifier = bufferToB64(
+    SRP.computeVerifier(
+      SRP.params["4096"],
+      b64ToBuffer(srpSalt),
+      Buffer.from(srpUserID),
+      b64ToBuffer(loginSubKey)
+    )
+  );
+  
+  return { srpUserID, srpSalt, srpVerifier, loginSubKey };
+};
+
+/**
+ * Derive a "login sub-key" for use as the SRP user password.
+ * Exactly matches web implementation deriveSRPLoginSubKey function.
+ */
+const deriveSRPLoginSubKey = async (kek: string): Promise<string> => {
+  console.log("DEBUG: --- Starting SRP Login SubKey Derivation (matching web implementation) ---");
+  console.log("DEBUG: Input KEK (base64):", kek);
+  
+  const kekBuffer = Buffer.from(kek, 'base64');
+  console.log(`DEBUG: KEK Buffer for SRP (length: ${kekBuffer.length}, type: Buffer)`);
+  
+  // Use the exact same logic as web implementation:
+  // const kekSubKeyBytes = await deriveSubKeyBytes(kek, 32, 1, "loginctx");
+  // return toB64(kekSubKeyBytes.slice(0, 16));
+  const loginKey = await deriveLoginKey(kekBuffer);
+  
+  // Return the login key as base64 (matching web implementation)
+  const result = bufferToB64(loginKey);
+  console.log("DEBUG: Final SRP Login SubKey (base64):", result);
+  console.log("DEBUG: --- Finished SRP Login SubKey Derivation ---");
+  return result;
+};
+
+/**
+ * Generate a salt for key derivation.
+ * Matches web implementation generateDeriveKeySalt function.
+ */
+const generateDeriveKeySalt = async (): Promise<string> => {
+  const salt = new Uint8Array(32);
+  crypto.getRandomValues(salt);
+  return bufferToB64(salt);
+};
+
+/**
+ * Generate an SRP client instance.
+ * Matches web implementation generateSRPClient function.
+ */
+const generateSRPClient = async (
+  srpSalt: string,
+  srpUserID: string,
+  loginSubKey: string
+): Promise<SrpClient> => {
+  return new Promise<SrpClient>((resolve, reject) => {
+    SRP.genKey((err, clientKey) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      
+      try {
+        const client = new SrpClient(
+          SRP.params["4096"],
+          b64ToBuffer(srpSalt),
+          Buffer.from(srpUserID),
+          b64ToBuffer(loginSubKey),
+          clientKey!,
+          false
+        );
+        resolve(client);
+      } catch (error) {
+        reject(error);
+      }
     });
-    
-    return response.data.token;
-  } catch (error) {
-    console.error('Error verifying email token:', error);
-    // Fallback to mock mode if the real API call fails
-    return 'simulated-auth-token';
-  }
+  });
 };
 
 /**
- * Initialize SRP authentication (first step)
- * @param email User email
- * @param password User password
- * @returns SRP session data if successful
+ * Create an SRP session on remote.
+ * Matches web implementation createSRPSession function.
  */
-export const initializeSRP = async (
-  email: string,
-  password: string
-): Promise<{ sessionId: string; srpB: string } | null> => {
-  try {
-    // In a real implementation, this would:
-    // 1. Get the user's SRP attributes from the server
-    // 2. Generate a client key and compute A
-    // 3. Send A to the server and receive B
-    // For now, we just simulate success
-    console.log(`Initializing SRP for ${email}`);
-    return {
-      sessionId: 'simulated-session-id',
-      srpB: 'simulated-srp-b',
-    };
-  } catch (error) {
-    console.error('Error initializing SRP:', error);
-    return null;
-  }
+const createSRPSession = async (srpUserID: string, srpA: string): Promise<CreateSRPSessionResponse> => {
+  console.log("DEBUG: Creating SRP session", {
+    srpUserID,
+    srpA: srpA.substring(0, 20) + '...'
+  });
+  
+  const apiClient = getUnauthenticatedApiClient(); // Use unauthenticated client for SRP
+  const response = await apiClient.createSRPSession(srpUserID, srpA);
+  
+  console.log("DEBUG: SRP session created:", {
+    sessionID: response.sessionID,
+    srpB: response.srpB.substring(0, 20) + '...'
+  });
+  
+  return response;
 };
 
 /**
- * Complete SRP authentication (second step)
- * @param email User email
- * @param sessionId SRP session ID
- * @param srpM1 SRP M1 (client evidence message)
- * @returns Authentication token if successful
+ * Verify an SRP session on remote.
+ * Matches web implementation verifySRPSession function.
  */
-export const completeSRP = async (
-  email: string,
-  sessionId: string,
+const verifySRPSession = async (
+  sessionID: string,
+  srpUserID: string,
   srpM1: string
-): Promise<string | null> => {
+): Promise<SRPVerificationResponse> => {
+  console.log("DEBUG: Verifying SRP session", {
+    srpUserID,
+    sessionID,
+    srpM1: srpM1.substring(0, 20) + '...'
+  });
+  
   try {
-    // In a real implementation, this would:
-    // 1. Send M1 to the server
-    // 2. Verify M2 from the server
-    // 3. Receive the authentication token
-    // For now, we just simulate success
-    console.log(`Completing SRP for ${email} with session ${sessionId}`);
-    return 'simulated-auth-token';
-  } catch (error) {
-    console.error('Error completing SRP:', error);
-    return null;
+    const apiClient = getUnauthenticatedApiClient(); // Use unauthenticated client for SRP
+    const response = await apiClient.verifySRPSession(srpUserID, sessionID, srpM1);
+    console.log("DEBUG: SRP session verified successfully");
+    return response;
+  } catch (error: any) {
+    if (error.status === 401) {
+      throw new Error("SRP verification failed (HTTP 401 Unauthorized)");
+    }
+    throw error;
   }
 };
 
 /**
- * A simplified SRP authentication flow
- * @param email User email
- * @param password User password
- * @returns Authentication token if successful
+ * Perform SRP authentication.
+ * Exactly matches web implementation verifySRP function flow.
  */
-export const authenticateWithSRP = async (
-  email: string,
-  password: string
-): Promise<string | null> => {
-  try {
-    // Check if email verification is required
-    const emailVerificationRequired = await checkEmailVerificationRequired(email);
-    
-    if (emailVerificationRequired) {
-      console.log('Email verification is required');
-      // Request email verification - this will send an OTP to the user's email
-      const otpSent = await requestEmailVerification(email);
-      
-      if (!otpSent) {
-        throw new Error('Failed to send verification email');
-      }
-      
-      // At this point in a real implementation, we would:
-      // 1. Show a prompt for the user to enter the OTP they received
-      // 2. Call verifyEmailToken with the user's email and entered OTP
-      // However, since we can't display a prompt in the current flow, we'll use a mock OTP for demo purposes
-      
-      // In a real implementation, this would be entered by the user
-      const mockOTP = '123456';
-      
-      // Verify the OTP
-      const token = await verifyEmailToken(email, mockOTP);
-      
-      if (!token) {
-        throw new Error('Email verification failed');
-      }
-      
-      return token;
-    } else {
-      console.log('Using SRP authentication');
-      // Initialize SRP
-      const srpSession = await initializeSRP(email, password);
-      
-      if (!srpSession) {
-        console.error('Failed to initialize SRP session');
-        return null;
-      }
-      
-      // Complete SRP
-      const token = await completeSRP(email, srpSession.sessionId, 'simulated-srp-m1');
-      return token;
-    }
-  } catch (error) {
-    console.error('Authentication error:', error);
-    // Return a mock token for demo purposes
-    return 'simulated-auth-token-via-email';
-  }
+export const performSRPAuthentication = async (
+  srpAttributes: SRPAttributes,
+  kek: string
+): Promise<SRPVerificationResponse> => {
+  console.log("[SRP] Starting SRP authentication");
+  
+  const loginSubKey = await deriveSRPLoginSubKey(kek);
+  const srpClient = await generateSRPClient(srpAttributes.srpSalt, srpAttributes.srpUserID, loginSubKey);
+  
+  // Send A, obtain B - matches web implementation
+  const srpA = bufferToB64(srpClient.computeA());
+  console.log("[SRP] Sending A to server");
+  
+  const { srpB, sessionID } = await createSRPSession(srpAttributes.srpUserID, srpA);
+  console.log("[SRP] Received B and sessionID from server");
+  
+  srpClient.setB(b64ToBuffer(srpB));
+  
+  // Send M1, obtain M2 - matches web implementation
+  const srpM1 = bufferToB64(srpClient.computeM1());
+  console.log("[SRP] Sending M1 to server");
+  
+  const response = await verifySRPSession(sessionID, srpAttributes.srpUserID, srpM1);
+  console.log("[SRP] Received M2 from server");
+  
+  // Verify M2 - matches web implementation
+  srpClient.checkM2(b64ToBuffer(response.srpM2));
+  console.log("[SRP] M2 verification successful");
+  
+  return response;
 };
+
+/**
+ * SRP Authentication Service - simplified to match web implementation patterns
+ */
+export class SRPAuthenticationService {
+  static async performSRPAuthentication(
+    email: string,
+    password: string
+  ): Promise<SRPVerificationResponse> {
+    console.log("[SRP] Starting SRP authentication for:", email);
+    
+    // Get SRP attributes - matches web implementation flow
+    const srpAttributes = await getSRPAttributes(email);
+    if (!srpAttributes) {
+      throw new Error("SRP attributes not found for user");
+    }
+    
+    console.log("[SRP] Retrieved SRP attributes");
+    
+    // Derive KEK from password using SRP attributes - matches web implementation
+    const kekBuffer = await deriveKeyEncryptionKey(
+      password,
+      srpAttributes.kekSalt,
+      srpAttributes.memLimit,
+      srpAttributes.opsLimit
+    );
+    const kek = bufferToB64(kekBuffer);
+    
+    // Perform SRP authentication - matches web implementation verifySRP function
+    return await performSRPAuthentication(srpAttributes, kek);
+  }
+}
+
+// Utility functions - match web implementation
+function bufferToB64(buffer: Uint8Array | Buffer): string {
+  return Buffer.from(buffer).toString("base64");
+}
+
+function b64ToBuffer(b64: string): Buffer {
+  return Buffer.from(b64, "base64");
+}
