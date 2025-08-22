@@ -26,6 +26,7 @@ A secure two-factor authentication extension for Raycast that integrates with En
 ## Development
 
 This extension is built using:
+
 - React
 - TypeScript
 - Raycast Extension API

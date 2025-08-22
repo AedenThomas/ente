@@ -1,37 +1,8 @@
 import { SRP, SrpClient } from "fast-srp-hap";
 import { v4 as uuidv4 } from "uuid";
-import { getApiClient, getUnauthenticatedApiClient } from "./api";
-import { deriveKeyEncryptionKey, deriveLoginKey, bufToBase64 } from "./crypto";
-
-/**
- * The SRP attributes for a user.
- */
-export interface SRPAttributes {
-  /**
-   * The SRP user ID for the (Ente) user.
-   */
-  srpUserID: string;
-  /**
-   * The SRP salt.
-   */
-  srpSalt: string;
-  /**
-   * KEK salt - same as in KeyAttributes
-   */
-  kekSalt: string;
-  /**
-   * Memory limit for key derivation
-   */
-  memLimit: number;
-  /**
-   * Operations limit for key derivation
-   */
-  opsLimit: number;
-  /**
-   * If true, then the client should use email verification instead of SRP.
-   */
-  isEmailMFAEnabled: boolean;
-}
+import { getUnauthenticatedApiClient } from "./api";
+import { deriveKeyEncryptionKey, deriveLoginKey } from "./crypto";
+import { SRPAttributes, CreateSRPSessionResponse, SRPVerificationResponse } from "../types";
 
 /**
  * A local-only structure holding information required for SRP setup.
@@ -41,29 +12,6 @@ export interface SRPSetupAttributes {
   srpSalt: string;
   srpVerifier: string;
   loginSubKey: string;
-}
-
-/**
- * SRP session creation response
- */
-export interface CreateSRPSessionResponse {
-  sessionID: string;
-  srpB: string;
-}
-
-/**
- * SRP verification response - matches server's EmailAuthorizationResponse + srpM2
- */
-export interface SRPVerificationResponse {
-  id: number;
-  keyAttributes?: any;
-  encryptedToken?: string;
-  token?: string;
-  twoFactorSessionID?: string;
-  twoFactorSessionIDV2?: string;
-  passkeySessionID?: string;
-  accountsUrl?: string;
-  srpM2: string;
 }
 
 /**
@@ -77,11 +25,11 @@ export const getSRPAttributes = async (email: string): Promise<SRPAttributes | u
     const attributes = await apiClient.getSRPAttributes(email);
     console.log("DEBUG: SRP attributes received:", {
       srpUserID: attributes.srpUserID,
-      isEmailMFAEnabled: attributes.isEmailMFAEnabled
+      isEmailMFAEnabled: attributes.isEmailMFAEnabled,
     });
     return attributes;
-  } catch (error: any) {
-    if (error.status === 404) {
+  } catch (error: unknown) {
+    if (error && typeof error === "object" && "status" in error && error.status === 404) {
       console.log("DEBUG: No SRP attributes found for user (404)");
       return undefined;
     }
@@ -95,17 +43,17 @@ export const getSRPAttributes = async (email: string): Promise<SRPAttributes | u
  */
 export const determineAuthMethod = async (email: string): Promise<"srp" | "email"> => {
   const srpAttributes = await getSRPAttributes(email);
-  
+
   if (!srpAttributes) {
     console.log("[SRP] No SRP attributes found, using email authentication");
     return "email";
   }
-  
+
   if (srpAttributes.isEmailMFAEnabled) {
     console.log("[SRP] Email MFA enabled, using email authentication");
     return "email";
   }
-  
+
   console.log("[SRP] Using SRP authentication");
   return "srp";
 };
@@ -116,20 +64,15 @@ export const determineAuthMethod = async (email: string): Promise<"srp" | "email
  */
 export const generateSRPSetupAttributes = async (kek: string): Promise<SRPSetupAttributes> => {
   const loginSubKey = await deriveSRPLoginSubKey(kek);
-  
+
   // Museum schema requires this to be a UUID.
   const srpUserID = uuidv4();
   const srpSalt = await generateDeriveKeySalt();
-  
+
   const srpVerifier = bufferToB64(
-    SRP.computeVerifier(
-      SRP.params["4096"],
-      b64ToBuffer(srpSalt),
-      Buffer.from(srpUserID),
-      b64ToBuffer(loginSubKey)
-    )
+    SRP.computeVerifier(SRP.params["4096"], b64ToBuffer(srpSalt), Buffer.from(srpUserID), b64ToBuffer(loginSubKey)),
   );
-  
+
   return { srpUserID, srpSalt, srpVerifier, loginSubKey };
 };
 
@@ -140,15 +83,15 @@ export const generateSRPSetupAttributes = async (kek: string): Promise<SRPSetupA
 const deriveSRPLoginSubKey = async (kek: string): Promise<string> => {
   console.log("DEBUG: --- Starting SRP Login SubKey Derivation (matching web implementation) ---");
   console.log("DEBUG: Input KEK (base64):", kek);
-  
-  const kekBuffer = Buffer.from(kek, 'base64');
+
+  const kekBuffer = Buffer.from(kek, "base64");
   console.log(`DEBUG: KEK Buffer for SRP (length: ${kekBuffer.length}, type: Buffer)`);
-  
+
   // Use the exact same logic as web implementation:
   // const kekSubKeyBytes = await deriveSubKeyBytes(kek, 32, 1, "loginctx");
   // return toB64(kekSubKeyBytes.slice(0, 16));
   const loginKey = await deriveLoginKey(kekBuffer);
-  
+
   // Return the login key as base64 (matching web implementation)
   const result = bufferToB64(loginKey);
   console.log("DEBUG: Final SRP Login SubKey (base64):", result);
@@ -170,18 +113,14 @@ const generateDeriveKeySalt = async (): Promise<string> => {
  * Generate an SRP client instance.
  * Matches web implementation generateSRPClient function.
  */
-const generateSRPClient = async (
-  srpSalt: string,
-  srpUserID: string,
-  loginSubKey: string
-): Promise<SrpClient> => {
+const generateSRPClient = async (srpSalt: string, srpUserID: string, loginSubKey: string): Promise<SrpClient> => {
   return new Promise<SrpClient>((resolve, reject) => {
     SRP.genKey((err, clientKey) => {
       if (err) {
         reject(err);
         return;
       }
-      
+
       try {
         const client = new SrpClient(
           SRP.params["4096"],
@@ -189,7 +128,7 @@ const generateSRPClient = async (
           Buffer.from(srpUserID),
           b64ToBuffer(loginSubKey),
           clientKey!,
-          false
+          false,
         );
         resolve(client);
       } catch (error) {
@@ -206,17 +145,17 @@ const generateSRPClient = async (
 const createSRPSession = async (srpUserID: string, srpA: string): Promise<CreateSRPSessionResponse> => {
   console.log("DEBUG: Creating SRP session", {
     srpUserID,
-    srpA: srpA.substring(0, 20) + '...'
+    srpA: srpA.substring(0, 20) + "...",
   });
-  
+
   const apiClient = getUnauthenticatedApiClient(); // Use unauthenticated client for SRP
   const response = await apiClient.createSRPSession(srpUserID, srpA);
-  
+
   console.log("DEBUG: SRP session created:", {
     sessionID: response.sessionID,
-    srpB: response.srpB.substring(0, 20) + '...'
+    srpB: response.srpB.substring(0, 20) + "...",
   });
-  
+
   return response;
 };
 
@@ -227,21 +166,21 @@ const createSRPSession = async (srpUserID: string, srpA: string): Promise<Create
 const verifySRPSession = async (
   sessionID: string,
   srpUserID: string,
-  srpM1: string
+  srpM1: string,
 ): Promise<SRPVerificationResponse> => {
   console.log("DEBUG: Verifying SRP session", {
     srpUserID,
     sessionID,
-    srpM1: srpM1.substring(0, 20) + '...'
+    srpM1: srpM1.substring(0, 20) + "...",
   });
-  
+
   try {
     const apiClient = getUnauthenticatedApiClient(); // Use unauthenticated client for SRP
     const response = await apiClient.verifySRPSession(srpUserID, sessionID, srpM1);
     console.log("DEBUG: SRP session verified successfully");
     return response;
-  } catch (error: any) {
-    if (error.status === 401) {
+  } catch (error: unknown) {
+    if (error && typeof error === "object" && "status" in error && error.status === 401) {
       throw new Error("SRP verification failed (HTTP 401 Unauthorized)");
     }
     throw error;
@@ -254,33 +193,33 @@ const verifySRPSession = async (
  */
 export const performSRPAuthentication = async (
   srpAttributes: SRPAttributes,
-  kek: string
+  kek: string,
 ): Promise<SRPVerificationResponse> => {
   console.log("[SRP] Starting SRP authentication");
-  
+
   const loginSubKey = await deriveSRPLoginSubKey(kek);
   const srpClient = await generateSRPClient(srpAttributes.srpSalt, srpAttributes.srpUserID, loginSubKey);
-  
+
   // Send A, obtain B - matches web implementation
   const srpA = bufferToB64(srpClient.computeA());
   console.log("[SRP] Sending A to server");
-  
+
   const { srpB, sessionID } = await createSRPSession(srpAttributes.srpUserID, srpA);
   console.log("[SRP] Received B and sessionID from server");
-  
+
   srpClient.setB(b64ToBuffer(srpB));
-  
+
   // Send M1, obtain M2 - matches web implementation
   const srpM1 = bufferToB64(srpClient.computeM1());
   console.log("[SRP] Sending M1 to server");
-  
+
   const response = await verifySRPSession(sessionID, srpAttributes.srpUserID, srpM1);
   console.log("[SRP] Received M2 from server");
-  
+
   // Verify M2 - matches web implementation
   srpClient.checkM2(b64ToBuffer(response.srpM2));
   console.log("[SRP] M2 verification successful");
-  
+
   return response;
 };
 
@@ -288,29 +227,26 @@ export const performSRPAuthentication = async (
  * SRP Authentication Service - simplified to match web implementation patterns
  */
 export class SRPAuthenticationService {
-  static async performSRPAuthentication(
-    email: string,
-    password: string
-  ): Promise<SRPVerificationResponse> {
+  static async performSRPAuthentication(email: string, password: string): Promise<SRPVerificationResponse> {
     console.log("[SRP] Starting SRP authentication for:", email);
-    
+
     // Get SRP attributes - matches web implementation flow
     const srpAttributes = await getSRPAttributes(email);
     if (!srpAttributes) {
       throw new Error("SRP attributes not found for user");
     }
-    
+
     console.log("[SRP] Retrieved SRP attributes");
-    
+
     // Derive KEK from password using SRP attributes - matches web implementation
     const kekBuffer = await deriveKeyEncryptionKey(
       password,
       srpAttributes.kekSalt,
       srpAttributes.memLimit,
-      srpAttributes.opsLimit
+      srpAttributes.opsLimit,
     );
     const kek = bufferToB64(kekBuffer);
-    
+
     // Perform SRP authentication - matches web implementation verifySRP function
     return await performSRPAuthentication(srpAttributes, kek);
   }

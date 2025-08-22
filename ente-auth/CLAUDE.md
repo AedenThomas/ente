@@ -222,23 +222,25 @@ The extension includes several advanced debugging features:
 The API client is designed with robust error handling and debugging:
 
 1. **Constructor**: Sets up Axios instance with proper headers and interceptors
+
    ```typescript
    constructor(token?: string) {
      this.client = axios.create({
        baseURL: API_BASE_URL,
-       headers: token ? { 
+       headers: token ? {
          'X-Auth-Token': token,
          'Content-Type': 'application/json'
        } : {
          'Content-Type': 'application/json'
        }
      });
-     
+
      // Add request/response interceptors for debugging
    }
    ```
 
 2. **Endpoint Testing Methods**: Tries multiple endpoints to find the working one
+
    ```typescript
    async testLoginEndpoints(email: string, password: string): Promise<{ endpoint: string; response: any } | null>
    async testAuthKeyEndpoints(): Promise<{ endpoint: string; response: any } | null>
@@ -246,6 +248,7 @@ The API client is designed with robust error handling and debugging:
    ```
 
 3. **Core API Methods**: Enhanced with endpoint testing and comprehensive error handling
+
    ```typescript
    async login(email: string, password: string): Promise<{ token: string; userID: number }>
    async getAuthKey(): Promise<AuthKey>
@@ -253,6 +256,7 @@ The API client is designed with robust error handling and debugging:
    ```
 
 4. **Utility Methods**: Performs connection testing and session validation
+
    ```typescript
    async testConnection(): Promise<void>
    async checkSessionValidity(): Promise<boolean>

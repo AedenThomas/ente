@@ -8,9 +8,9 @@ export default function AddCode() {
   const { push } = useNavigation();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | undefined>();
-  
-  const handleSubmit = async (values: { 
-    name: string; 
+
+  const handleSubmit = async (values: {
+    name: string;
     issuer?: string;
     secret: string;
     type: string;
@@ -23,50 +23,50 @@ export default function AddCode() {
       setError("Name and Secret are required");
       return;
     }
-    
+
     setIsLoading(true);
     setError(undefined);
-    
+
     try {
       const toast = await showToast({
         style: Toast.Style.Animated,
         title: "Adding authenticator code...",
       });
-      
+
       // Get storage service
       const storage = getStorageService();
-      
+
       // Get current entities
       const entities = await storage.getAuthEntities();
-      
+
       // Create new auth data
       const newAuthData: AuthData = {
         id: `manual-${Date.now()}`,
         name: values.name,
         issuer: values.issuer,
-        secret: values.secret.replace(/\s/g, '').toUpperCase(),
-        type: (values.type || 'totp') as 'totp' | 'hotp' | 'steam',
-        algorithm: (values.algorithm || 'sha1') as 'sha1' | 'sha256' | 'sha512',
-        digits: parseInt(values.digits || '6', 10),
-        period: parseInt(values.period || '30', 10),
-        counter: values.type === 'hotp' ? parseInt(values.counter || '0', 10) : undefined,
+        secret: values.secret.replace(/\s/g, "").toUpperCase(),
+        type: (values.type || "totp") as "totp" | "hotp" | "steam",
+        algorithm: (values.algorithm || "sha1") as "sha1" | "sha256" | "sha512",
+        digits: parseInt(values.digits || "6", 10),
+        period: parseInt(values.period || "30", 10),
+        counter: values.type === "hotp" ? parseInt(values.counter || "0", 10) : undefined,
         updatedAt: Date.now(),
       };
-      
+
       // Add to entities
       entities.push(newAuthData);
-      
+
       // Store updated entities
       await storage.storeAuthEntities(entities);
-      
+
       toast.style = Toast.Style.Success;
       toast.title = "Authenticator code added successfully!";
-      
+
       // Navigate to the main screen
       push(<Index />);
     } catch (error) {
       console.error("Add code error:", error);
-      
+
       if (error instanceof Error) {
         setError(error.message);
         await showToast({
@@ -86,7 +86,7 @@ export default function AddCode() {
       setIsLoading(false);
     }
   };
-  
+
   return (
     <Form
       actions={
@@ -96,23 +96,9 @@ export default function AddCode() {
       }
       isLoading={isLoading}
     >
-      <Form.TextField
-        id="name"
-        title="Account Name"
-        placeholder="e.g. GitHub, Gmail"
-        error={error}
-        autoFocus
-      />
-      <Form.TextField
-        id="issuer"
-        title="Issuer (Optional)"
-        placeholder="e.g. Google, Microsoft"
-      />
-      <Form.TextField
-        id="secret"
-        title="Secret Key"
-        placeholder="Enter base32 secret key"
-      />
+      <Form.TextField id="name" title="Account Name" placeholder="e.g. GitHub, Gmail" error={error} autoFocus />
+      <Form.TextField id="issuer" title="Issuer (Optional)" placeholder="e.g. Google, Microsoft" />
+      <Form.TextField id="secret" title="Secret Key" placeholder="Enter base32 secret key" />
       <Form.Dropdown id="type" title="Type" defaultValue="totp">
         <Form.Dropdown.Item value="totp" title="TOTP (Time-Based)" />
         <Form.Dropdown.Item value="hotp" title="HOTP (Counter-Based)" />
@@ -127,16 +113,8 @@ export default function AddCode() {
         <Form.Dropdown.Item value="6" title="6 digits" />
         <Form.Dropdown.Item value="8" title="8 digits" />
       </Form.Dropdown>
-      <Form.TextField
-        id="period"
-        title="Period (seconds)"
-        placeholder="30"
-      />
-      <Form.TextField
-        id="counter"
-        title="Counter (HOTP only)"
-        placeholder="0"
-      />
+      <Form.TextField id="period" title="Period (seconds)" placeholder="30" />
+      <Form.TextField id="counter" title="Counter (HOTP only)" placeholder="0" />
       <Form.Description text="Note: Manually added codes are stored locally and won't sync with your Ente account." />
     </Form>
   );

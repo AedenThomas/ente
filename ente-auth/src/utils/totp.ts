@@ -22,7 +22,7 @@ function hmac(algorithm: string, key: Buffer, message: Buffer) {
       hash = CryptoJS.HmacSHA1(msgWordArray, keyWordArray);
       break;
   }
-  return Buffer.from(hash.toString(CryptoJS.enc.Hex), 'hex');
+  return Buffer.from(hash.toString(CryptoJS.enc.Hex), "hex");
 }
 
 function generate(
@@ -33,19 +33,15 @@ function generate(
   type: "totp" | "hotp" | "steam",
 ): string {
   // Use a reliable base32 decoding library
-  const key = Buffer.from(base32Decode(secret.replace(/\s/g, '').toUpperCase(), 'RFC4648'));
+  const key = Buffer.from(base32Decode(secret.replace(/\s/g, "").toUpperCase(), "RFC4648"));
 
   const counterBuffer = Buffer.alloc(8);
   // Write counter to buffer in big-endian format
   counterBuffer.writeBigUInt64BE(BigInt(counter), 0);
-  
+
   const hash = hmac(algorithm, key, counterBuffer);
   const offset = hash[hash.length - 1] & 0xf;
-  const binary =
-    ((hash[offset] & 0x7f) << 24) |
-    (hash[offset + 1] << 16) |
-    (hash[offset + 2] << 8) |
-    hash[offset + 3];
+  const binary = ((hash[offset] & 0x7f) << 24) | (hash[offset + 1] << 16) | (hash[offset + 2] << 8) | hash[offset + 3];
 
   if (type === "steam") {
     let code = "";

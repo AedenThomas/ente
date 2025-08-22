@@ -8,7 +8,7 @@ const logBuffer = (name: string, buf: Buffer | Uint8Array | undefined | string, 
     console.log(`DEBUG: ${name} is undefined or null.`);
     return;
   }
-  if (typeof buf === 'string') {
+  if (typeof buf === "string") {
     console.log(`DEBUG: ${name} (string: "${buf}")`);
     return;
   }
@@ -45,8 +45,7 @@ const fromB64 = async (input: string): Promise<Uint8Array> => {
 /**
  * Convert BytesOrB64 to bytes - matches web implementation
  */
-const bytes = async (bob: string | Uint8Array): Promise<Uint8Array> =>
-  typeof bob == "string" ? fromB64(bob) : bob;
+const bytes = async (bob: string | Uint8Array): Promise<Uint8Array> => (typeof bob == "string" ? fromB64(bob) : bob);
 
 // --- LOGIN CRYPTOGRAPHIC CHAIN ---
 
@@ -57,7 +56,7 @@ export async function deriveKeyEncryptionKey(
   opsLimit: number,
 ): Promise<Buffer> {
   console.log("DEBUG: --- [Step 1] Starting Key Encryption Key (KEK) Derivation ---");
-  const passwordBuf = Buffer.from(password, 'utf-8');
+  const passwordBuf = Buffer.from(password, "utf-8");
   const saltBuf = base64ToBuf(saltB64);
   logBuffer("Password String", password);
   logBuffer("Password Buffer", passwordBuf);
@@ -96,7 +95,7 @@ export async function decryptMasterKey(
   logBuffer("Encrypted MK Ciphertext", ciphertext);
   logBuffer("MK Nonce", nonce, true);
   logBuffer("Using KEK for decryption", kek, true);
-  
+
   const decryptedMessage = sodium.crypto_secretbox_open_easy(ciphertext, nonce, kek);
   if (!decryptedMessage) {
     throw new Error("Failed to decrypt master key. This usually means the password is incorrect.");
@@ -142,7 +141,7 @@ export async function decryptSessionToken(
   const encryptedData = await fromB64(encryptedTokenB64);
   const publicKey = await fromB64(publicKeyB64);
   const sk = new Uint8Array(secretKey);
-  
+
   logBuffer("Token Encrypted Data (from API)", encryptedData);
   logBuffer("Public Key", publicKey, true);
   logBuffer("Using SECRET KEY for decryption", sk, true);
@@ -152,12 +151,12 @@ export async function decryptSessionToken(
     console.error("DEBUG: [Step 4] Sealed box decryption FAILED. MAC could not be verified.");
     throw new Error("Failed to decrypt session token using sealed box. Invalid keys or corrupted data.");
   }
-  
+
   console.log("DEBUG: [Step 4] Sealed box decryption SUCCEEDED.");
 
-  // Convert decrypted bytes to base64url format WITH padding to match CLI implementation  
+  // Convert decrypted bytes to base64url format WITH padding to match CLI implementation
   const tokenBase64Url = sodium.to_base64(decrypted, sodium.base64_variants.URLSAFE);
-  
+
   console.log("DEBUG: Final token (base64url with padding):", tokenBase64Url);
   console.log("DEBUG: --- [Step 4] Finished Session Token Decryption (base64url with padding) ---");
   return tokenBase64Url;
@@ -165,11 +164,7 @@ export async function decryptSessionToken(
 
 // --- AUTHENTICATOR DATA CRYPTOGRAPHY ---
 
-export async function decryptAuthKey(
-  encryptedKeyB64: string,
-  headerB64: string,
-  masterKey: Buffer,
-): Promise<Buffer> {
+export async function decryptAuthKey(encryptedKeyB64: string, headerB64: string, masterKey: Buffer): Promise<Buffer> {
   await sodium.ready;
   console.log("DEBUG: --- Starting Auth Key Decryption (secretbox) ---");
   const ciphertext = await fromB64(encryptedKeyB64);
@@ -199,11 +194,11 @@ export async function decryptAuthEntity(
   const header = await fromB64(headerB64);
   const ciphertext = await fromB64(encryptedDataB64);
   const authKey = new Uint8Array(authenticatorKey);
-  
+
   logBuffer("Auth Entity Ciphertext", ciphertext);
   logBuffer("Auth Entity Header", header, true);
   logBuffer("Using Authenticator Key", authKey, true);
-  
+
   const pullState = sodium.crypto_secretstream_xchacha20poly1305_init_pull(header, authKey);
   console.log("DEBUG: Initialized entity secretstream pull state successfully.");
 
@@ -224,7 +219,7 @@ export async function encryptAuthKey(
 ): Promise<{ encryptedKeyB64: string; headerB64: string }> {
   await sodium.ready;
   console.log("DEBUG: --- Starting Auth Key Encryption (secretbox) ---");
-  
+
   const nonce = sodium.randombytes_buf(sodium.crypto_secretbox_NONCEBYTES);
   const authKey = new Uint8Array(authenticatorKey);
   const mk = new Uint8Array(masterKey);
@@ -255,13 +250,13 @@ export async function generateAuthenticatorKey(): Promise<Buffer> {
 export async function deriveLoginKey(keyEncryptionKey: Buffer): Promise<Buffer> {
   console.log("DEBUG: --- Starting Login Key Derivation for SRP ---");
   logBuffer("Input KEK", keyEncryptionKey, true);
-  
+
   // Convert KEK to base64 to match web implementation flow
   const kek = bufToBase64(keyEncryptionKey);
-  
+
   // Use the exact same logic as web app's deriveSRPLoginSubKey
   const kekSubKeyBytes = await deriveSubKeyBytes(kek, 32, 1, "loginctx");
-  
+
   // Return first 16 bytes as login key (matching web implementation)
   const loginKey = Buffer.from(kekSubKeyBytes.slice(0, 16));
   logBuffer("Derived Login Key", loginKey, true);
@@ -283,18 +278,13 @@ async function deriveSubKeyBytes(
     context,
     subKeyID,
     subKeyLength,
-    keyLength: key.length
+    keyLength: key.length,
   });
-  
+
   // Use the same libsodium function as the web implementation
   const keyBytes = await bytes(key);
-  const result = sodium.crypto_kdf_derive_from_key(
-    subKeyLength,
-    subKeyID,
-    context,
-    keyBytes,
-  );
-  
+  const result = sodium.crypto_kdf_derive_from_key(subKeyLength, subKeyID, context, keyBytes);
+
   console.log("DEBUG: Successfully derived subkey using crypto_kdf_derive_from_key (matching web implementation)");
   logBuffer("Derived subkey", result, true);
   return result;

@@ -1,5 +1,5 @@
-import { AuthCode, AuthData, AuthKey } from "../types";
-import { generateHOTP, generateTOTP, getProgress, getRemainingSeconds } from "../utils/crypto";
+import { AuthCode, AuthData, AuthKey, AuthEntity } from "../types";
+import { generateTOTP, getProgress, getRemainingSeconds } from "../utils/totp";
 
 /**
  * Mock authenticator data for testing
@@ -81,7 +81,8 @@ export const generateMockAuthCodes = (): AuthCode[] => {
     let progress: number | undefined;
 
     if (entity.type === "hotp") {
-      code = generateHOTP(entity.secret, entity.counter || 0, entity.digits, entity.algorithm);
+      // Simple mock HOTP implementation for testing
+      code = "123456";
     } else {
       code = generateTOTP(entity.secret, entity.period, entity.digits, entity.algorithm);
       remainingSeconds = getRemainingSeconds(entity.period);
@@ -170,7 +171,7 @@ export class MockEnteApiClient {
   /**
    * Mock login implementation
    */
-  async login(email: string, password: string): Promise<{ token: string; userID: number }> {
+  async login(email: string): Promise<{ token: string; userID: number }> {
     console.log("Mock login for:", email);
 
     // Simulate success for any valid-looking email
@@ -212,6 +213,7 @@ export class MockEnteApiClient {
         id: entity.id,
         encryptedData,
         header,
+        createdAt: Date.now(),
         updatedAt: Date.now(),
         isDeleted: false,
       };

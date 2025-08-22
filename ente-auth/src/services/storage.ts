@@ -7,7 +7,6 @@ import { pbkdf2Sync, randomBytes, createCipheriv, createDecipheriv } from "crypt
 const STORAGE_SALT = "ente-raycast-local-storage-salt";
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
-const AUTH_TAG_LENGTH = 16;
 
 export class StorageService {
   private masterKey: Buffer | null = null; // [+] Use Buffer type
@@ -21,17 +20,11 @@ export class StorageService {
     const masterKey = await this.getMasterKey();
     if (!masterKey) throw new Error("Master key is not set. Cannot derive storage key.");
 
-    this.storageEncryptionKey = pbkdf2Sync(
-      masterKey,
-      STORAGE_SALT,
-      100000,
-      32,
-      "sha256",
-    );
+    this.storageEncryptionKey = pbkdf2Sync(masterKey, STORAGE_SALT, 100000, 32, "sha256");
     console.log("DEBUG: Derived local storage encryption key.");
     return this.storageEncryptionKey;
   }
-  
+
   // ... (encryptData and decryptData are correct and don't need changes)
   private async encryptData(data: string): Promise<string> {
     const key = await this.getStorageEncryptionKey();
@@ -57,14 +50,15 @@ export class StorageService {
     return decrypted;
   }
 
-
-  async getMasterKey(): Promise<Buffer | null> { // [+] Use Buffer type
+  async getMasterKey(): Promise<Buffer | null> {
+    // [+] Use Buffer type
     if (this.masterKey) return this.masterKey;
     const creds = await this.getCredentials();
     return creds ? creds.masterKey : null;
   }
 
-  setMasterKey(key: Buffer) { // [+] Use Buffer type
+  setMasterKey(key: Buffer) {
+    // [+] Use Buffer type
     this.masterKey = key;
   }
 
@@ -79,7 +73,7 @@ export class StorageService {
 
     const encrypted = await this.encryptData(JSON.stringify(storableCredentials));
     await LocalStorage.setItem("credentials", encrypted);
-    
+
     // [PERSISTENCE FIX] Store session token separately for direct reuse on startup
     await LocalStorage.setItem("sessionToken", credentials.token);
     console.log("DEBUG: Credentials and session token stored for persistence.");
@@ -135,18 +129,17 @@ export class StorageService {
 
   async storeAuthEntities(entities: AuthData[]): Promise<void> {
     console.log(`DEBUG: 💾 Storing ${entities.length} auth entities (SIMPLIFIED)`);
-    
+
     try {
       // FUNDAMENTAL FIX: Always clear both storage locations first to prevent stale data
       await LocalStorage.removeItem("authEntities");
       await LocalStorage.removeItem("authEntities_unencrypted");
       console.log("DEBUG: 🧹 Cleared both storage locations to prevent stale deletions");
-      
+
       const encrypted = await this.encryptData(JSON.stringify(entities));
       await LocalStorage.setItem("authEntities", encrypted);
       console.log("DEBUG: ✅ Auth entities stored (encrypted, single source of truth)");
-      
-    } catch (error) {
+    } catch {
       // If encryption fails (e.g., during session restoration without master key),
       // store unencrypted as fallback, but still clear both locations first
       console.log("DEBUG: 🔄 Encryption failed, storing auth entities unencrypted (session restoration)");
@@ -159,7 +152,7 @@ export class StorageService {
     let encryptedEntities: AuthData[] = [];
     let unencryptedEntities: AuthData[] = [];
     let useEncrypted = false;
-    
+
     // First try encrypted version
     const encryptedData = (await LocalStorage.getItem("authEntities")) as string | undefined;
     if (encryptedData) {
@@ -168,11 +161,11 @@ export class StorageService {
         encryptedEntities = JSON.parse(decrypted);
         useEncrypted = true;
         console.log(`DEBUG: ✅ Retrieved ${encryptedEntities.length} auth entities (encrypted)`);
-      } catch (error) {
+      } catch {
         console.log("DEBUG: ⚠️ Failed to decrypt auth entities, trying unencrypted fallback");
       }
     }
-    
+
     // Check unencrypted version (used during session restoration)
     const unencryptedData = (await LocalStorage.getItem("authEntities_unencrypted")) as string | undefined;
     if (unencryptedData) {
@@ -183,7 +176,7 @@ export class StorageService {
         console.error("Failed to parse unencrypted auth entities:", error);
       }
     }
-    
+
     // DELETION FIX: Choose the most recent/complete data source
     if (useEncrypted && encryptedEntities.length > 0) {
       // Prefer encrypted data when available
@@ -195,7 +188,7 @@ export class StorageService {
       console.log("DEBUG: ✅ Using unencrypted fallback entities");
       return unencryptedEntities;
     }
-    
+
     console.log("DEBUG: ❌ No auth entities found");
     return [];
   }
@@ -213,14 +206,14 @@ export class StorageService {
     console.log("DEBUG: Storing authentication context", {
       userId: context.userId,
       accountKey: context.accountKey ? context.accountKey.substring(0, 20) + "..." : "none",
-      userAgent: context.userAgent
+      userAgent: context.userAgent,
     });
-    
+
     try {
       const encrypted = await this.encryptData(JSON.stringify(context));
       await LocalStorage.setItem("authenticationContext", encrypted);
       console.log("DEBUG: ✅ Authentication context stored (encrypted)");
-    } catch (error) {
+    } catch {
       // If encryption fails (e.g., during session restoration without master key),
       // store unencrypted since authentication context is not sensitive
       console.log("DEBUG: 🔄 Encryption failed, storing authentication context unencrypted (session restoration)");
@@ -237,11 +230,11 @@ export class StorageService {
         const decrypted = await this.decryptData(encryptedData);
         console.log("DEBUG: ✅ Retrieved authentication context (encrypted)");
         return JSON.parse(decrypted);
-      } catch (error) {
+      } catch {
         console.log("DEBUG: ⚠️ Failed to decrypt authentication context, trying unencrypted fallback");
       }
     }
-    
+
     // Fallback to unencrypted version (used during session restoration)
     const unencryptedData = (await LocalStorage.getItem("authenticationContext_unencrypted")) as string | undefined;
     if (unencryptedData) {
@@ -252,7 +245,7 @@ export class StorageService {
         console.error("Failed to parse unencrypted authentication context:", error);
       }
     }
-    
+
     console.log("DEBUG: ❌ No authentication context found");
     return null;
   }
@@ -263,13 +256,13 @@ export class StorageService {
     const tokenData = {
       userId,
       encryptedToken,
-      timestamp: Date.now()
+      timestamp: Date.now(),
     };
     const encrypted = await this.encryptData(JSON.stringify(tokenData));
     await LocalStorage.setItem("encryptedToken", encrypted);
   }
 
-  async getEncryptedToken(): Promise<{userId: number, encryptedToken: string} | null> {
+  async getEncryptedToken(): Promise<{ userId: number; encryptedToken: string } | null> {
     const encryptedData = (await LocalStorage.getItem("encryptedToken")) as string | undefined;
     if (!encryptedData) return null;
     try {
@@ -277,7 +270,7 @@ export class StorageService {
       const tokenData = JSON.parse(decrypted);
       return {
         userId: tokenData.userId,
-        encryptedToken: tokenData.encryptedToken
+        encryptedToken: tokenData.encryptedToken,
       };
     } catch (error) {
       console.error("Failed to decrypt stored encrypted token:", error);
@@ -294,37 +287,37 @@ export class StorageService {
     console.log("DEBUG: 💾 Storing session token for persistence across restarts");
     console.log("DEBUG: Token length:", token.length);
     console.log("DEBUG: Token preview:", token.substring(0, 20) + "...");
-    
+
     const sessionData = {
       token,
       email,
       userId,
       timestamp: Date.now(),
-      userAgent: 'Raycast/Ente-Auth/1.0.0'
+      userAgent: "Raycast/Ente-Auth/1.0.0",
     };
-    
+
     // Store session data without encryption since it's already a derived session token
     await LocalStorage.setItem("persistentSession", JSON.stringify(sessionData));
     console.log("DEBUG: ✅ Session token stored for persistence");
   }
 
-  async getStoredSessionToken(): Promise<{token: string, email: string, userId: number, userAgent: string} | null> {
+  async getStoredSessionToken(): Promise<{ token: string; email: string; userId: number; userAgent: string } | null> {
     try {
-      const sessionData = await LocalStorage.getItem("persistentSession") as string | undefined;
+      const sessionData = (await LocalStorage.getItem("persistentSession")) as string | undefined;
       if (!sessionData) {
         console.log("DEBUG: No persistent session found");
         return null;
       }
-      
+
       const parsed = JSON.parse(sessionData);
       console.log("DEBUG: 🔍 Found stored session for user:", parsed.userId);
       console.log("DEBUG: Session age:", Math.floor((Date.now() - parsed.timestamp) / 1000 / 60), "minutes");
-      
+
       return {
         token: parsed.token,
         email: parsed.email,
         userId: parsed.userId,
-        userAgent: parsed.userAgent || 'Raycast/Ente-Auth/1.0.0'
+        userAgent: parsed.userAgent || "Raycast/Ente-Auth/1.0.0",
       };
     } catch (error) {
       console.error("DEBUG: Failed to parse stored session:", error);
@@ -357,13 +350,13 @@ export class StorageService {
       email,
       userId,
       encryptedToken,
-      timestamp: Date.now()
+      timestamp: Date.now(),
     };
     const encrypted = await this.encryptData(JSON.stringify(partialCreds));
     await LocalStorage.setItem("partialCredentials", encrypted);
   }
 
-  async getPartialCredentials(): Promise<{email: string, userId?: number, encryptedToken?: string} | null> {
+  async getPartialCredentials(): Promise<{ email: string; userId?: number; encryptedToken?: string } | null> {
     const encryptedData = (await LocalStorage.getItem("partialCredentials")) as string | undefined;
     if (!encryptedData) return null;
     try {
@@ -392,9 +385,9 @@ export class StorageService {
     console.log("DEBUG: 💾 Storing decrypted authenticator key for session restoration");
     const keyData = {
       key: bufToBase64(authKey),
-      timestamp: Date.now()
+      timestamp: Date.now(),
     };
-    
+
     // Store without encryption since we're avoiding master key dependency
     await LocalStorage.setItem("decryptedAuthKey", JSON.stringify(keyData));
     console.log("DEBUG: ✅ Decrypted authenticator key stored for session restoration");
@@ -402,16 +395,16 @@ export class StorageService {
 
   async getStoredDecryptedAuthKey(): Promise<Buffer | null> {
     try {
-      const keyData = await LocalStorage.getItem("decryptedAuthKey") as string | undefined;
+      const keyData = (await LocalStorage.getItem("decryptedAuthKey")) as string | undefined;
       if (!keyData) {
         console.log("DEBUG: No stored decrypted authenticator key found");
         return null;
       }
-      
+
       const parsed = JSON.parse(keyData);
       console.log("DEBUG: 🔑 Found stored decrypted authenticator key");
       console.log("DEBUG: Key age:", Math.floor((Date.now() - parsed.timestamp) / 1000 / 60), "minutes");
-      
+
       return base64ToBuf(parsed.key);
     } catch (error) {
       console.error("DEBUG: Failed to parse stored decrypted authenticator key:", error);
@@ -435,19 +428,19 @@ export class StorageService {
 
   // DELETION FIX: Consistent entity update that handles both storage locations
   async updateAuthEntitiesFromSync(
-    currentEntities: Map<string, AuthData>, 
-    entityChanges: Array<{id: string, isDeleted: boolean, entityData?: AuthData}>
+    currentEntities: Map<string, AuthData>,
+    entityChanges: Array<{ id: string; isDeleted: boolean; entityData?: AuthData }>,
   ): Promise<AuthData[]> {
     console.log(`DEBUG: 🔄 Processing ${entityChanges.length} entity changes for consistent storage`);
-    
+
     let deletionCount = 0;
     let updateCount = 0;
-    
+
     // Apply all changes to the entity map
     for (const change of entityChanges) {
       if (change.isDeleted) {
         const wasDeleted = currentEntities.delete(change.id);
-        console.log(`DEBUG: ❌ ${wasDeleted ? 'Deleted' : 'Already missing'} entity ${change.id}`);
+        console.log(`DEBUG: ❌ ${wasDeleted ? "Deleted" : "Already missing"} entity ${change.id}`);
         if (wasDeleted) deletionCount++;
       } else if (change.entityData) {
         currentEntities.set(change.id, change.entityData);
@@ -455,47 +448,53 @@ export class StorageService {
         updateCount++;
       }
     }
-    
+
     const updatedEntities = Array.from(currentEntities.values());
-    console.log(`DEBUG: 📊 Applied ${deletionCount} deletions and ${updateCount} updates. Final count: ${updatedEntities.length}`);
-    
+    console.log(
+      `DEBUG: 📊 Applied ${deletionCount} deletions and ${updateCount} updates. Final count: ${updatedEntities.length}`,
+    );
+
     // CRITICAL FIX: Force store to unencrypted during session restoration when no master key
     const masterKey = await this.getMasterKey();
     if (!masterKey) {
-      console.log(`DEBUG: 🔄 No master key available - forcing unencrypted storage for ${updatedEntities.length} entities`);
+      console.log(
+        `DEBUG: 🔄 No master key available - forcing unencrypted storage for ${updatedEntities.length} entities`,
+      );
       await LocalStorage.setItem("authEntities_unencrypted", JSON.stringify(updatedEntities));
       console.log(`DEBUG: ✅ Forced unencrypted storage update with deletions applied`);
     } else {
       // Store with our improved storage method that cleans up stale data
       await this.storeAuthEntities(updatedEntities);
     }
-    
+
     // DELETION FIX: Also ensure both storage locations are cleaned up for deletions
-    const deletedIds = entityChanges.filter(c => c.isDeleted).map(c => c.id);
+    const deletedIds = entityChanges.filter((c) => c.isDeleted).map((c) => c.id);
     if (deletedIds.length > 0) {
       await this.ensureDeletionsInAllStorageLocations(deletedIds);
     }
-    
+
     return updatedEntities;
   }
 
   // DELETION FIX: Ensure deletions are reflected in all storage locations
   private async ensureDeletionsInAllStorageLocations(deletedIds: string[]): Promise<void> {
     console.log(`DEBUG: 🧹 Ensuring ${deletedIds.length} deletions are reflected in all storage locations`);
-    
+
     // Check and clean unencrypted storage if it exists
     const unencryptedData = (await LocalStorage.getItem("authEntities_unencrypted")) as string | undefined;
     if (unencryptedData) {
       try {
         const unencryptedEntities: AuthData[] = JSON.parse(unencryptedData);
         const originalCount = unencryptedEntities.length;
-        
+
         // Remove deleted entities from unencrypted storage
-        const cleanedEntities = unencryptedEntities.filter(entity => !deletedIds.includes(entity.id));
-        
+        const cleanedEntities = unencryptedEntities.filter((entity) => !deletedIds.includes(entity.id));
+
         if (cleanedEntities.length !== originalCount) {
           await LocalStorage.setItem("authEntities_unencrypted", JSON.stringify(cleanedEntities));
-          console.log(`DEBUG: 🧹 Cleaned ${originalCount - cleanedEntities.length} deleted entities from unencrypted storage`);
+          console.log(
+            `DEBUG: 🧹 Cleaned ${originalCount - cleanedEntities.length} deleted entities from unencrypted storage`,
+          );
         } else {
           console.log("DEBUG: 🔍 No deleted entities found in unencrypted storage");
         }

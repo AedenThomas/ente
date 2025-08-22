@@ -5,14 +5,14 @@ import { getStorageService } from "./services/storage";
 import { getApiClient, resetApiClient } from "./services/api";
 import { deriveKeyEncryptionKey, decryptMasterKey, decryptSecretKey, decryptSessionToken } from "./services/crypto";
 import { determineAuthMethod, SRPAuthenticationService } from "./services/srp";
-import { generateTOTP, getRemainingSeconds, getProgress } from "./utils/totp";
+import { generateTOTP } from "./utils/totp";
 import { AuthCode, AuthorizationResponse, UserCredentials } from "./types";
 
 export default function Index() {
   const [codes, setCodes] = useState<AuthCode[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchText, setSearchText] = useState("");
-  const [timer, setTimer] = useState<NodeJS.Timeout | null>(null);
+  const [timer] = useState<NodeJS.Timeout | null>(null);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [showLogin, setShowLogin] = useState(false);
 
@@ -76,9 +76,9 @@ export default function Index() {
         } catch (error) {
           console.log("DEBUG: ❌ Session restoration failed, trying fallback:", error);
           console.log("DEBUG: 🕵️ ERROR DETAILS:", {
-            message: error instanceof Error ? error.message : 'Unknown',
-            stack: error instanceof Error ? error.stack : 'No stack',
-            name: error instanceof Error ? error.name : 'Unknown'
+            message: error instanceof Error ? error.message : "Unknown",
+            stack: error instanceof Error ? error.stack : "No stack",
+            name: error instanceof Error ? error.name : "Unknown",
           });
           // Don't clear token immediately - it might work when back online
         }
@@ -93,7 +93,7 @@ export default function Index() {
       if (credentials) {
         console.log("DEBUG: ✅ Found stored credentials, attempting offline initialization");
         const authenticatorService = getAuthenticatorService();
-        
+
         console.log("DEBUG: 🔐 Initializing authenticator service with credentials (SHOULD BE OFFLINE)");
         const initialized = await authenticatorService.init();
 
@@ -116,9 +116,9 @@ export default function Index() {
     } catch (error) {
       console.error("DEBUG: 💥 CRITICAL ERROR in checkLoginStatus:", error);
       console.log("DEBUG: 🕵️ CRITICAL ERROR DETAILS:", {
-        message: error instanceof Error ? error.message : 'Unknown',
-        stack: error instanceof Error ? error.stack : 'No stack',
-        name: error instanceof Error ? error.name : 'Unknown'
+        message: error instanceof Error ? error.message : "Unknown",
+        stack: error instanceof Error ? error.stack : "No stack",
+        name: error instanceof Error ? error.name : "Unknown",
       });
       setIsLoggedIn(false);
       setShowLogin(true);
@@ -139,7 +139,7 @@ export default function Index() {
   const loadCodes = async (forceLoad: boolean = false) => {
     console.log("DEBUG: 📋 Starting loadCodes (TRACING FOR NETWORK CALLS)");
     console.log(`DEBUG: 🔍 Current login state: isLoggedIn=${isLoggedIn}, forceLoad=${forceLoad}`);
-    
+
     if (!isLoggedIn && !forceLoad) {
       console.log("DEBUG: ❌ Not logged in and no forceLoad, skipping loadCodes");
       return;
@@ -148,7 +148,7 @@ export default function Index() {
     try {
       console.log("DEBUG: 🔐 Getting authenticator service...");
       const authenticatorService = getAuthenticatorService();
-      
+
       console.log("DEBUG: 📱 About to call getAuthCodes() - WATCH FOR NETWORK CALLS");
       const authCodes = await authenticatorService.getAuthCodes();
 
@@ -166,19 +166,20 @@ export default function Index() {
     } catch (error) {
       console.error("DEBUG: 💥 ERROR in loadCodes:", error);
       console.log("DEBUG: 🕵️ LOADCODES ERROR DETAILS:", {
-        message: error instanceof Error ? error.message : 'Unknown',
-        stack: error instanceof Error ? error.stack : 'No stack',
-        name: error instanceof Error ? error.name : 'Unknown'
+        message: error instanceof Error ? error.message : "Unknown",
+        stack: error instanceof Error ? error.stack : "No stack",
+        name: error instanceof Error ? error.name : "Unknown",
       });
-      
+
       // Check if it's a network error - if so, fail silently for offline use
-      const isNetworkError = error instanceof Error && 
-        (error.message.includes("Network error") || 
-         error.message.includes("ENOTFOUND") ||
-         error.message.includes("ECONNREFUSED"));
-      
+      const isNetworkError =
+        error instanceof Error &&
+        (error.message.includes("Network error") ||
+          error.message.includes("ENOTFOUND") ||
+          error.message.includes("ECONNREFUSED"));
+
       console.log(`DEBUG: 🌐 Is this a network error? ${isNetworkError}`);
-      
+
       if (!isNetworkError) {
         // Only show error toast for non-network errors
         console.log("DEBUG: 🚨 Showing error toast for non-network error");
@@ -190,7 +191,7 @@ export default function Index() {
       } else {
         console.log("DEBUG: 🔇 Network error during loadCodes - continuing silently for offline use");
       }
-      
+
       // Don't clear codes on network errors - keep any existing codes
       if (!isNetworkError) {
         console.log("DEBUG: 🗑️ Clearing codes due to non-network error");
@@ -214,51 +215,44 @@ export default function Index() {
       });
 
       const authenticatorService = getAuthenticatorService();
-      
+
       // Get current codes before sync to compare
       const currentCodes = await authenticatorService.getAuthCodes();
       console.log(`DEBUG: SMART SYNC - Starting with ${currentCodes.length} local codes`);
-      
-      // Try incremental sync first (faster) and capture if server changes were received
-      let serverChangesReceived = false;
-      const originalSyncAuthenticator = authenticatorService.syncAuthenticator;
-      authenticatorService.syncAuthenticator = async function(forceCompleteSync: boolean = false) {
-        const result = await originalSyncAuthenticator.call(this, forceCompleteSync);
-        // Check if server actually returned changes by monitoring the sync process
-        // We'll set this flag based on whether the server diff was empty
-        return result;
-      };
-      
+
+      // Try incremental sync first (faster)
+
       let syncResult = await authenticatorService.syncAuthenticator(false);
       let authCodes = await authenticatorService.getAuthCodes();
-      
+
       // ENHANCED SMART SYNC: Better detection of stale timestamp scenarios
       // The key insight: if we had codes before sync, but final result is the same count,
       // AND we know the server didn't send any changes, then we likely have a stale timestamp
       const hadCodesBefore = currentCodes.length > 0;
-      const hasCodesAfter = authCodes.length > 0;
       const finalCountSame = currentCodes.length === authCodes.length;
-      
+
       // For now, let's use a simpler heuristic: if we have codes but the count didn't change,
       // and we know deletions might have happened, force a complete sync
-      const shouldForceCompleteSync = hadCodesBefore && finalCountSame && 
+      const shouldForceCompleteSync =
+        hadCodesBefore &&
+        finalCountSame &&
         // Check if the codes are exactly the same (indicating no server changes processed)
-        JSON.stringify(currentCodes.map(c => c.id).sort()) === JSON.stringify(authCodes.map(c => c.id).sort());
-      
+        JSON.stringify(currentCodes.map((c) => c.id).sort()) === JSON.stringify(authCodes.map((c) => c.id).sort());
+
       if (shouldForceCompleteSync) {
         console.log("DEBUG: SMART SYNC TRIGGERED - Same codes detected, forcing complete refresh for deletions...");
         console.log(`DEBUG: Before sync: ${currentCodes.length} codes, After sync: ${authCodes.length} codes`);
         console.log(`DEBUG: Same IDs detected - likely stale timestamp preventing deletion sync`);
         toast.title = "Refreshing all data from server...";
-        
+
         // Reset and do complete sync
         const storage = getStorageService();
         await storage.resetSyncState();
         syncResult = await authenticatorService.syncAuthenticator(true);
         authCodes = await authenticatorService.getAuthCodes();
-        
+
         console.log(`DEBUG: Complete sync result - Final codes: ${authCodes.length}`);
-        console.log(`DEBUG: Complete sync IDs: ${authCodes.map(c => c.id).join(', ')}`);
+        console.log(`DEBUG: Complete sync IDs: ${authCodes.map((c) => c.id).join(", ")}`);
       }
 
       if (!syncResult) {
@@ -277,13 +271,14 @@ export default function Index() {
       }
     } catch (error) {
       console.error("Sync error:", error);
-      
+
       // Check if it's a network error and we have cached codes
-      const isNetworkError = error instanceof Error && 
-        (error.message.includes("Network error") || 
-         error.message.includes("ENOTFOUND") ||
-         error.message.includes("ECONNREFUSED"));
-      
+      const isNetworkError =
+        error instanceof Error &&
+        (error.message.includes("Network error") ||
+          error.message.includes("ENOTFOUND") ||
+          error.message.includes("ECONNREFUSED"));
+
       if (isNetworkError && codes.length > 0) {
         await showToast({
           style: Toast.Style.Animated,
@@ -294,7 +289,7 @@ export default function Index() {
         await showToast({
           style: Toast.Style.Failure,
           title: "Sync failed",
-          message: isNetworkError ? "No internet connection" : (error instanceof Error ? error.message : "Unknown error"),
+          message: isNetworkError ? "No internet connection" : error instanceof Error ? error.message : "Unknown error",
         });
       }
     } finally {
@@ -344,15 +339,16 @@ export default function Index() {
 
   // Login form submit handler
   const handleLoginSubmit = async (values: { email: string; password?: string; otp?: string }) => {
-    if (!values.email) {
-      setLoginError("Email is required");
-      return;
-    }
-
-    setLoginLoading(true);
-    setLoginError(undefined);
-
+    // ULTIMATE PASSKEY ERROR HANDLER - catch ANY error in the entire function
     try {
+      if (!values.email) {
+        setLoginError("Email is required");
+        return;
+      }
+
+      setLoginLoading(true);
+      setLoginError(undefined);
+
       const apiClient = await getApiClient();
 
       if (!otpRequested) {
@@ -473,7 +469,7 @@ export default function Index() {
               console.log("DEBUG: 💾 Attempting to store decrypted authenticator key for session persistence");
 
               // Try to get the decrypted authenticator key and store it
-              const authCodes = await authenticatorService.getAuthCodes();
+              await authenticatorService.getAuthCodes();
               console.log("DEBUG: ✅ Authenticator key accessed successfully, should be cached and stored");
 
               // The authenticator key should now be cached in the service
@@ -568,7 +564,7 @@ export default function Index() {
             console.log("DEBUG: 💾 Attempting to store decrypted authenticator key for session persistence");
 
             // Try to get the decrypted authenticator key and store it
-            const authCodes = await authenticatorService.getAuthCodes();
+            await authenticatorService.getAuthCodes();
             console.log("DEBUG: ✅ Authenticator key accessed successfully, should be cached and stored");
 
             // The authenticator key should now be cached in the service
@@ -587,7 +583,20 @@ export default function Index() {
       }
     } catch (error) {
       console.error("Login error:", error);
-      const message = error instanceof Error ? error.message : "An unknown error occurred";
+
+      // Check if this is the specific passkey error we want to replace
+      let message = error instanceof Error ? error.message : "An unknown error occurred";
+
+      if (
+        error instanceof Error &&
+        (error.message.includes("Cannot read properties of undefined (reading 'kekSalt')") ||
+          error.message.includes("kekSalt") ||
+          error.message.includes("keyAttributes"))
+      ) {
+        console.log("DEBUG: 🔑 Detected passkey-related error - showing custom message");
+        message = "Passkey not supported, kindly disable and login and enable it back";
+      }
+
       setLoginError(message);
       await showToast({
         style: Toast.Style.Failure,
@@ -626,7 +635,7 @@ export default function Index() {
         setCodes((prevCodes) => {
           // Only update if we have codes and they need updating
           if (prevCodes.length === 0) return prevCodes;
-          
+
           return prevCodes.map((code) => {
             if (code.type === "totp" || code.type === "steam") {
               const now = Date.now();
@@ -642,7 +651,9 @@ export default function Index() {
 
               // Log when code actually changes (new period started)
               if (newCode !== code.code) {
-                console.log(`DEBUG: 🔄 New ${code.type.toUpperCase()} code generated for ${code.issuer || code.name}: ${newCode.substring(0, 3)}***`);
+                console.log(
+                  `DEBUG: 🔄 New ${code.type.toUpperCase()} code generated for ${code.issuer || code.name}: ${newCode.substring(0, 3)}***`,
+                );
               }
 
               // Always update with fresh values

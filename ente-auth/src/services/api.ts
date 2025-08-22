@@ -5,7 +5,6 @@ import {
   AuthEntity,
   ApiClientConfig,
   AuthenticationContext,
-  AuthenticatedHeaders,
   SRPAttributes,
   CreateSRPSessionResponse,
   SRPVerificationResponse,
@@ -216,7 +215,7 @@ export class EnteApiClient {
 
     if (response.data.diff && Array.isArray(response.data.diff)) {
       console.log(`\n=== INDIVIDUAL ENTITY BREAKDOWN (${response.data.diff.length} entities) ===`);
-      response.data.diff.forEach((entity, index) => {
+      response.data.diff.forEach((entity: AuthEntity, index: number) => {
         console.log(`\n--- Entity ${index + 1}/${response.data.diff.length} ---`);
         console.log("ID:", entity.id);
         console.log("isDeleted:", entity.isDeleted);
@@ -274,9 +273,10 @@ export class EnteApiClient {
         if (endpoint.expectedCodes.includes(response.status)) {
           basicTokenValid = true;
         }
-      } catch (error: any) {
-        const status = error?.response?.status;
-        const data = error?.response?.data;
+      } catch (error: unknown) {
+        const axiosError = error as AxiosError;
+        const status = axiosError?.response?.status;
+        const data = axiosError?.response?.data;
         console.log(`DEBUG: ❌ ${endpoint.name} - FAILED (${status}):`, data);
 
         // If we get 401 on basic endpoints, token is definitely invalid
@@ -302,9 +302,10 @@ export class EnteApiClient {
         const response = await this.client.get(endpoint.path, { headers });
         console.log(`DEBUG: ✅ ${endpoint.name} - SUCCESS (${response.status})`);
         anySuccess = true;
-      } catch (error: any) {
-        const status = error?.response?.status;
-        const data = error?.response?.data;
+      } catch (error: unknown) {
+        const axiosError = error as AxiosError;
+        const status = axiosError?.response?.status;
+        const data = axiosError?.response?.data;
         console.log(`DEBUG: ❌ ${endpoint.name} - FAILED (${status}):`, data);
 
         if (status === 404) {

@@ -19,8 +19,8 @@ export interface AuthData {
   name: string;
   issuer?: string;
   secret: string;
-  type: 'totp' | 'hotp' | 'steam';
-  algorithm: 'sha1' | 'sha256' | 'sha512';
+  type: "totp" | "hotp" | "steam";
+  algorithm: "sha1" | "sha256" | "sha512";
   digits: number;
   period: number;
   counter?: number;
@@ -75,11 +75,11 @@ export interface AuthenticationContext {
 }
 
 export interface AuthenticatedHeaders {
-  'Content-Type': string;
-  'X-Auth-Token': string;
-  'X-Client-Package': string;
-  'User-Agent'?: string;
-  'X-Request-Id'?: string;
+  "Content-Type": string;
+  "X-Auth-Token": string;
+  "X-Client-Package": string;
+  "User-Agent"?: string;
+  "X-Request-Id"?: string;
 }
 
 // SRP Authentication Types
